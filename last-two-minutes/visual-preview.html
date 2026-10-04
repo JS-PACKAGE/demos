@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>美術預覽 — 一顆星球最後的兩分鐘</title></head>
+<body>
+<main id="preview" data-ready="false">
+  <header><p class="eyebrow">LAST TWO MINUTES · ART REVIEW</p><h1>一顆星球最後的兩分鐘</h1><p class="sub">四個代表性即時 3D 預覽 · <span id="sound-note">無聲（可開配樂）</span> · 固定鏡位 · 非完整影片</p></header>
+  <nav aria-label="代表性預覽"><a href="#flyby" data-view="flyby">01 艦船掠過</a><a href="#wounded" data-view="wounded">02 命中與裂口</a><a href="#aftermath" data-view="aftermath">03 地殼崩解</a><a href="#combat" data-view="combat">04 戰艦交火</a></nav>
+  <section class="theater" aria-label="即時 3D 演出"><canvas id="scene" aria-label="程序生成星球與代表性艦船"></canvas><div id="loading" role="status">正在準備幾何、程序材質與 GPU 資源…</div><div id="failure" role="alert" hidden></div></section>
+  <section class="caption"><div><p id="shot-name">艦船掠過</p><p id="shot-detail">前景裝甲與引擎，中景完整曲面星球，背景星域。</p></div><div class="review-actions"><button id="music" type="button" disabled>播放配樂</button><button id="pause" type="button" disabled>暫停</button><button id="restart" type="button" disabled>重播此預覽</button></div></section>
+  <div class="timeline"><progress id="time" max="12" value="0" aria-label="預覽進度"></progress><output id="clock">0.0 / 12.0 秒</output></div>
+  <details><summary>渲染與幀時間量測</summary><output id="metrics">等待首批幀樣本</output><p class="note">幀間隔使用實際 RAF 量測，CPU 是渲染提交時間，不是 GPU 耗時；GPU 若支援 timestamp query，顯示原生 pass 總和及本次執行尖峰。略過每段前 30 幀。時間軸只使用引擎 delta。</p></details>
+  <footer>XYZ.js 1.13.0 · 程序幾何與程序 PBR 材質 · 固定 seed · 僅供美術確認，尚未套入完整 120 秒演出</footer>
+</main>
+<script type="module" src="/src/ui/visual-preview.ts"></script>
+</body></html>

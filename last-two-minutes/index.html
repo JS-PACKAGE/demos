@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="一顆星球最後的兩分鐘：以 XYZ.js 即時渲染的 120 秒太空演出。" />
+    <meta name="referrer" content="no-referrer" />
+    <title>一顆星球最後的兩分鐘</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="wordmark"><span class="orbit-mark" aria-hidden="true"></span> 即時演出 <span class="edition">作品 001</span></div>
+        <p id="backend">正在準備引擎</p>
+      </header>
+      <section class="theater" aria-label="120 秒即時 3D 演出">
+        <canvas id="show" width="1280" height="720" aria-label="星球、艦隊與崩解的即時演出"></canvas>
+        <div id="intro" class="intro">
+          <p class="eyebrow">一場無法挽回的告別</p>
+          <h1>一顆星球<br />最後的兩分鐘<span class="title-period">。</span></h1>
+          <p class="description">先看見它的重量。<br />再看著一切，失去重力。</p>
+          <div class="start-actions">
+            <button id="start" class="primary" disabled>開始演出 <span aria-hidden="true">↗</span></button>
+            <button id="silent" class="quiet-button" disabled>無聲播放</button>
+          </div>
+          <p class="fineprint">非預錄影片 · 建議使用耳機 · 含閃光效果</p>
+        </div>
+        <div id="unsupported" class="unsupported" hidden>
+          <p class="eyebrow">無法開演</p><h2>此瀏覽器無法演出</h2>
+          <p id="failure" role="alert"></p>
+          <a href="https://xyz.js-package.xyz/" target="_blank" rel="noopener noreferrer">查看引擎支援資訊 ↗</a>
+        </div>
+        <div id="end" class="end-card" hidden><p>原位置，只剩一道光。</p><span>演出結束 · 可在下方重播</span></div>
+        <div class="frame-bottom"><span id="beat">正在準備場景</span><span id="sound">尚未開始</span></div>
+      </section>
+      <section class="transport" aria-label="演出控制">
+        <div class="transport-top">
+          <div class="time"><span id="time">00:00</span><span class="duration"> / 02:00</span></div>
+          <p id="status" role="status" aria-live="polite">正在載入本機演出資源…</p>
+          <div class="play-actions">
+            <button id="pause" hidden>暫停</button><button id="resume" hidden>繼續</button><button id="replay" hidden>重播 ↺</button>
+          </div>
+        </div>
+        <progress id="progress" max="120" value="0" aria-label="演出模擬時間"></progress>
+        <ol class="chapters" aria-label="六段時間軸">
+          <li><span>01</span> 建立重量 <small>00–20</small></li>
+          <li><span>02</span> 戰火逼近 <small>20–50</small></li>
+          <li><span>03</span> 地表危機 <small>50–70</small></li>
+          <li><span>04</span> 無法阻止 <small>70–95</small></li>
+          <li><span>05</span> 先不崩解 <small>95–110</small></li>
+          <li><span>06</span> 最後一道光 <small>110–120</small></li>
+        </ol>
+      </section>
+      <footer><p>由 XYZ.js 1.13.0 即時渲染。暫停或離開分頁，演出時間不前進。</p><a href="https://github.com/JS-PACKAGE/demos/tree/main/last-two-minutes" target="_blank" rel="noopener noreferrer">原始碼 · AGPL-3.0 ↗</a></footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

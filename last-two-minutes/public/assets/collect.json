@@ -1,0 +1,61 @@
+{
+  "channel": "sfx",
+  "voice": {
+    "version": 1,
+    "algorithm": 7,
+    "feedback": 0,
+    "ops": [
+      {
+        "ratio": 1,
+        "level": 0.7,
+        "detune": 0,
+        "adsr": {
+          "a": 0.005,
+          "d": 0.05,
+          "s": 0.3,
+          "r": 0.12
+        }
+      },
+      {
+        "ratio": 2,
+        "level": 0.3,
+        "detune": 0,
+        "adsr": {
+          "a": 0.005,
+          "d": 0.04,
+          "s": 0.1,
+          "r": 0.08
+        }
+      },
+      {
+        "ratio": 3,
+        "level": 0,
+        "detune": 0,
+        "adsr": {
+          "a": 0,
+          "d": 0,
+          "s": 0,
+          "r": 0
+        }
+      },
+      {
+        "ratio": 4,
+        "level": 0,
+        "detune": 0,
+        "adsr": {
+          "a": 0,
+          "d": 0,
+          "s": 0,
+          "r": 0
+        }
+      }
+    ]
+  },
+  "notes": [
+    {
+      "note": 84,
+      "time": 0,
+      "duration": 0.2
+    }
+  ]
+}

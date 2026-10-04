@@ -1,0 +1,27 @@
+{
+  "name": "last-two-minutes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "preinstall": "node scripts/verify-engine.mjs",
+    "assets:engine": "node scripts/verify-engine.mjs && node scripts/copy-engine.mjs",
+    "assets:audio": "node --experimental-strip-types scripts/generate-audio.mjs",
+    "dev": "pnpm assets:engine && pnpm assets:audio && vite",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "build": "pnpm assets:engine && pnpm assets:audio && pnpm typecheck && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "xyz.js": "file:vendor/xyz.js.tgz"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.3.1"
+  }
+}
