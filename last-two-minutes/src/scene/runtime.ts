@@ -35,6 +35,8 @@ export async function createRuntime(
     if (scene.clock.status === 'ended') audio.pause();
     onFrame(sample);
   });
+  // Review aid, stripped from production builds: hold the show on an exact frame.
+  if (import.meta.env.DEV) Object.assign(window, { lastTwoMinutes: { hold(t: number) { scene.clock.time = t; scene.clock.status = 'paused'; }, scene, game } });
   const fail = (): void => {
     scene.clock.pause();
     audio.pause();

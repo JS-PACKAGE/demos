@@ -1,4 +1,5 @@
 import { CONTRACT, EVENTS } from '../show/contract.ts';
+import { BATTLES } from '../show/battles.ts';
 import type { CueName, VoiceName } from './synthesis.ts';
 
 export interface ScoreNote {
@@ -88,6 +89,16 @@ function compose(): readonly ScoreNote[] {
 }
 
 export const SCORE=compose();
-export const CUES:readonly ScoreCue[]=EVENTS.map((event):ScoreCue=>({
-  t:event.t,kind:event.kind==='fire'?'shot':event.kind==='impact'?'impact':event.kind==='break'?'breakup':'shield',pan:event.pan,
-}));
+const pan = (x: number): number => Math.max(-1, Math.min(1, x / 12));
+/** Ordinary gunfire is sounded from the battle scripts, so each cue matches a visible muzzle or impact. */
+const BATTLE_CUES: readonly ScoreCue[] = BATTLES.flatMap(battle => battle.script.shots.flatMap((shot): ScoreCue[] => [
+  { t: battle.start + shot.fireTime, kind: 'shot', pan: pan(shot.start[0]) },
+  { t: battle.start + shot.hitTime, kind: shot.result === 'shield' ? 'shield' : shot.result === 'kill' ? 'breakup' : 'impact', pan: pan(shot.end[0]) },
+]));
+export const CUES: readonly ScoreCue[] = [
+  // Authored kills are sounded by the lethal shot above; the remaining events are single director marks.
+  ...EVENTS.filter(event => event.kind !== 'kill').map((event): ScoreCue => ({
+    t: event.t, kind: event.kind === 'fire' ? 'shot' : event.kind === 'impact' ? 'impact' : event.kind === 'break' ? 'breakup' : 'shield', pan: event.pan,
+  })),
+  ...BATTLE_CUES,
+].sort((a, b) => a.t - b.t);

@@ -1,248 +1,258 @@
-import { Scene, Geometry, Mesh, InstancedMesh, PBRMaterial, TextureMaterial, PerspectiveCamera, Vector3, type Game, type Texture, type Renderer } from 'xyz.js';
+import { Scene, Group, Mesh, Geometry, InstancedMesh, PBRMaterial, NativeMaterial3D, PerspectiveCamera, PointLight, EnvironmentMap, GPUParticleEmitter3D, Vector3, type Game, type Texture, type Renderer } from 'xyz.js';
 import { CONTRACT, EVENTS, seededRandom, type Vec3 } from '../show/contract.ts';
 import { ShowClock } from '../show/clock.ts';
 import { sampleShow, type ShowSample } from '../show/director.ts';
-import { crustTile, fighterGeometry, pose, radialPose } from './geometry.ts';
-import { makeTextures } from './textures.ts';
-import { AnalyticParticles, type Burst } from './particles.ts';
+import { BATTLES, battleVisible } from '../show/battles.ts';
+import { pose } from './geometry.ts';
+import { createPlanetModel, type PlanetModel } from './planet-model.ts';
+import { createShipModel, type ShipModel } from './ship-model.ts';
+import { createCombatModel, type CombatModel } from './combat-model.ts';
+import { createWeaponModel, type WeaponModel } from './weapon-model.ts';
+import { createCataclysm, type Cataclysm } from './cataclysm.ts';
+import { terrain } from './planet-noise.ts';
 
-type Flight = { angle:number; radius:number; height:number; speed:number; phase:number };
-type Crack = { position:Vec3; rotation:Vec3; length:number; reveal:number };
+const PLANET_ROTATION = [-.06, .18, 0] as const;
+const HERO = { from: 1, to: 17.5, startAngle: -55 * Math.PI / 180, angularSpeed: 9 * Math.PI / 180, radius: 12.8, scale: .36 };
+const EYE_HEIGHT = .5;
+const normalize = (v: Vec3): Vec3 => { const n = Math.hypot(...v) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
 
 export class ShowScene extends Scene {
   readonly clock = new ShowClock();
   private readonly lens = new PerspectiveCamera();
   private readonly aim = new Vector3();
+  private readonly planetGroup = new Group();
+  private readonly woundLight = new PointLight({ position: [0, 0, 0], color: [1, .35, .08], intensity: 0, range: 40 });
   private readonly textures: Texture[] = [];
-  private readonly geometries = new Set<Geometry>();
-  private readonly flights: Flight[] = [];
-  private readonly cracks: Crack[] = [];
-  private readonly fragmentNormals: Vec3[] = [];
-  private readonly capitals: Mesh[] = [];
-  private readonly weapons: Mesh[] = [];
-  private readonly flashes: Mesh[] = [];
-  private readonly particleLayers: AnalyticParticles[] = [];
-  private readonly kills = EVENTS.filter(event=>event.kind==='kill');
-  private readonly arrivalTime = EVENTS.find(event=>event.detail==='fleet-pass')!.t;
-  private readonly impactPosition = EVENTS.find(event=>event.kind==='impact')!.position;
+  private readonly geometries: Geometry[] = [];
+  private readonly nativeMaterials: NativeMaterial3D[] = [];
+  private readonly streams: GPUParticleEmitter3D[] = [];
+  private readonly battles: { model: CombatModel; shown: boolean }[] = [];
+  private readonly focusTimes = EVENTS.filter(event => event.kind === 'fire').map(event => event.t);
+  private readonly impactPoint: Vec3;
+  private readonly woundPoint: Vec3;
+  private readonly weaponDirection: Vec3;
+  private readonly weaponDistance: number;
+  private readonly environmentMap: EnvironmentMap;
+  private groundRadius = CONTRACT.planet.radius + EYE_HEIGHT;
   private renderer?: Renderer;
-  private planet?: Mesh;
-  private atmosphere?: Mesh;
-  private fragments?: InstancedMesh;
-  private fighters?: InstancedMesh;
-  private crackMesh?: InstancedMesh;
-  private debris?: InstancedMesh;
-  private shield?: Mesh;
-  private impact?: Mesh;
-  private core?: Mesh;
-  private shock?: Mesh;
-  private lightLine?: Mesh;
-  private shadow?: Mesh;
-  private weaponGlow?: Mesh;
-  private beam?: Mesh;
-  private releaseDone = false;
+  private planet?: PlanetModel;
+  private ship?: ShipModel;
+  private weapon?: WeaponModel;
+  private cataclysm?: Cataclysm;
+  private appliedCrack = -1;
+  private rebuilding = Promise.resolve();
+  private released = false;
   private prepared = false;
+  hdr = false;
 
-  constructor(private readonly onFrame:(sample:ShowSample)=>void) {
+  constructor(private readonly onFrame: (sample: ShowSample) => void) {
     super();
-    this.lens.near=CONTRACT.camera.near; this.lens.far=CONTRACT.camera.far;
-    this.camera3D=this.lens;
-    this.ambientLight=.22;
-    this.directionalLight={direction:new Vector3(-.6,.4,1).normalize(),color:[.65,.8,1],intensity:2};
-    this.shadows.enabled=false;
+    this.lens.near = CONTRACT.camera.near; this.lens.far = CONTRACT.camera.far;
+    this.camera3D = this.lens;
+    const sun = new Vector3(...CONTRACT.visual.lightDirection).normalize();
+    this.directionalLight = { direction: sun, color: [1, .92, .81], intensity: 3.1 };
+    this.environmentMap = EnvironmentMap.gradient({ width: CONTRACT.visual.environmentWidth,
+      zenith: [.045, .065, .105], horizon: [.15, .2, .28], ground: [.013, .018, .028],
+      sun: { direction: [sun.x, sun.y, sun.z], color: [10, 9.2, 8.1], radius: .045 } });
+    this.environment = this.environmentMap; this.environmentIntensity = .45;
+    this.ambientLight = .025;
+    this.shadows.enabled = true; this.shadows.cascades = 1;
+    this.shadows.mapSize = CONTRACT.visual.shadowMapSize; this.shadows.extent = 38;
+    this.shadows.near = .1; this.shadows.far = 150; this.shadows.bias = .00035;
+    this.pointLights.push(this.woundLight);
+    this.planetGroup.rotation.setFromEuler(...PLANET_ROTATION);
+    this.add(this.planetGroup);
+    // The wound and beam target follow the planet's fixed orientation exactly.
+    const damage = normalize(CONTRACT.visual.damageDirection), radius = CONTRACT.planet.radius;
+    this.impactPoint = this.rotate(damage[0] * radius, damage[1] * radius, damage[2] * radius);
+    this.woundPoint = this.rotate(damage[0] * (radius - 1.2), damage[1] * (radius - 1.2), damage[2] * (radius - 1.2));
+    const weapon = CONTRACT.scene.weaponPosition;
+    const toTarget = [this.impactPoint[0] - weapon[0], this.impactPoint[1] - weapon[1], this.impactPoint[2] - weapon[2]] as const;
+    this.weaponDistance = Math.hypot(...toTarget);
+    this.weaponDirection = normalize(toTarget);
     this.applyCamera(sampleShow(0));
   }
 
-  override async preload(game:Game,signal:AbortSignal):Promise<void> {
-    if(this.prepared) return;
-    this.renderer=game.graphics;
-    if(!game.graphics.capabilities.threeD||game.graphics.backend==='canvas2d') throw new Error('此瀏覽器無法演出 3D');
-    const floatAttachment=game.graphics.backend==='webgpu'||game.canvas.getContext('webgl2')?.getExtension('EXT_color_buffer_float')!=null;
-    const hdr=floatAttachment;
-    this.postProcessing.enabled=hdr;
-    this.postProcessing.toneMapping='aces';this.postProcessing.exposure=1;
-    this.postProcessing.bloomStrength=hdr?.65:0;this.postProcessing.bloomThreshold=1;this.postProcessing.bloomRadius=5;
-    this.postProcessing.fxaa=hdr;this.transparency='sorted';
-    const maps=await makeTextures();
-    this.textures.push(...Object.values(maps));
-    if(signal.aborted||this.releaseDone){this.releaseResources();throw new DOMException('Aborted','AbortError');}
-    const random=seededRandom(CONTRACT.seed), radius=CONTRACT.planet.radius;
-    const material=(color:[number,number,number],emissive:[number,number,number]=[0,0,0],opacity=1)=>new PBRMaterial({texture:maps.white,color,emissive,roughness:.65,metallic:.25,opacity,transparent:opacity<1,doubleSided:true});
-    const add=(geometry:Geometry,mat:TextureMaterial)=>{
-      this.geometries.add(geometry);return this.add(new Mesh({geometry,material:mat}));
-    };
-    const ball=Geometry.sphere(1,48,32), box=Geometry.cube(1);this.geometries.add(ball);this.geometries.add(box);
-    this.planet=add(Geometry.sphere(radius,96,64),new PBRMaterial({texture:maps.ground,emissiveTexture:maps.cities,emissive:[2.8,2.1,1.3],roughness:.93,metallic:.05}));
-    this.atmosphere=add(Geometry.sphere(radius*1.008,80,48),material([.13,.38,.8],[.08,.2,.42],.065));
-    this.fighters=this.add(new InstancedMesh({geometry:fighterGeometry(),material:material([.3,.42,.52],[.05,.14,.2]),count:CONTRACT.budgets.fighters}));this.geometries.add(this.fighters.geometry);
-    for(let i=0;i<this.fighters.count;i++){
-      this.flights.push({angle:random()*Math.PI*2,radius:12+random()*12,height:(random()-.5)*15,speed:.04+random()*.07,phase:random()*Math.PI*2});
-      this.fighters.setColorAt(i,i%3===0?.55:1,i%3===0?.8:.55,i%3===0?1:.35);
+  /** Planet-group orientation applied to a local point. */
+  private rotate(x: number, y: number, z: number): Vec3 {
+    const q = this.planetGroup.rotation;
+    const tx = 2 * (q.y * z - q.z * y), ty = 2 * (q.z * x - q.x * z), tz = 2 * (q.x * y - q.y * x);
+    return [x + q.w * tx + q.y * tz - q.z * ty, y + q.w * ty + q.z * tx - q.x * tz, z + q.w * tz + q.x * ty - q.y * tx];
+  }
+
+  /** Radius at which the ground camera clears the actual displaced terrain beneath it. */
+  private measureGround(): number {
+    const q = this.planetGroup.rotation, start = CONTRACT.cameraTrack.find(shot => shot.subject === 'surface')!;
+    const [x, y, z] = normalize(start.frames[0]!.position);
+    // Inverse rotation of the world-space ground direction into the planet's local frame.
+    const tx = -2 * (q.y * z - q.z * y), ty = -2 * (q.z * x - q.x * z), tz = -2 * (q.x * y - q.y * x);
+    const lx = x + q.w * tx - q.y * tz + q.z * ty, ly = y + q.w * ty - q.z * tx + q.x * tz, lz = z + q.w * tz - q.x * ty + q.y * tx;
+    let height = 0;
+    for (let a = -3; a <= 3; a++) for (let b = -3; b <= 3; b++) {
+      const [px, py, pz] = normalize([lx + a * .05, ly + b * .05, lz + (a - b) * .02]);
+      height = Math.max(height, terrain(px, py, pz).height);
     }
-    for(let i=0;i<CONTRACT.budgets.capitals;i++){
-      const ship=add(box,material(i===0?[.12,.14,.17]:[.2,.27,.34]));
-      ship.scale.set(i===0?4.8:2.4,i===0?.7:.5,i===0?8:4.4);this.capitals.push(ship);
-      for(let j=0;j<3;j++){
-        const engine=ship.add(new Mesh({geometry:box,material:material([.1,.5,.9],[.2,2,4])}));engine.position.set((j-1)*.18,0,.52);engine.scale.set(.09,.4,.06);
-      }
+    return CONTRACT.planet.radius + height + EYE_HEIGHT;
+  }
+
+  override async preload(game: Game, signal: AbortSignal): Promise<void> {
+    if (this.prepared) return;
+    this.renderer = game.graphics;
+    if (!game.graphics.capabilities.threeD || game.graphics.backend === 'canvas2d') throw new Error('此瀏覽器無法演出 3D');
+    this.hdr = game.graphics.backend === 'webgpu' || !!game.canvas.getContext('webgl2')?.getExtension('EXT_color_buffer_float');
+    const post = this.postProcessing;
+    post.enabled = this.hdr; post.toneMapping = 'aces'; post.exposure = .86;
+    post.bloomStrength = .12; post.bloomThreshold = 1.5; post.bloomRadius = 3;
+    post.fxaa = this.hdr; this.transparency = 'sorted';
+    const [planet, ship] = await Promise.all([createPlanetModel(), createShipModel()]);
+    this.planet = planet; this.ship = ship;
+    this.planetGroup.add(planet.root); this.add(ship.root);
+    this.textures.push(...planet.textures, ...ship.textures);
+    this.geometries.push(...planet.geometries, ...ship.geometries);
+    for (const node of planet.root.children) if (node instanceof Mesh && node.material instanceof NativeMaterial3D) this.nativeMaterials.push(node.material);
+    for (const battle of BATTLES) {
+      const model = await createCombatModel(ship, battle.script);
+      this.add(model.root);
+      for (const light of model.lights) this.pointLights.push(light);
+      this.geometries.push(...model.geometries); this.nativeMaterials.push(...model.nativeMaterials);
+      this.battles.push({ model, shown: true });
     }
-    // The surface shot uses the real curved planet and a projected curved silhouette.
-    this.shadow=add(crustTile(radius+.022,.8),new TextureMaterial({texture:maps.shadow,color:[0,0,0],transparent:true}));
-    this.shadow.rotation.setFromEuler(-Math.PI/2,0,0);this.shadow.position.set(0,radius+.022,0);
-    const weaponPosition=CONTRACT.scene.weaponPosition;
-    const weapon=add(box,material([.16,.12,.17]));weapon.position.set(...weaponPosition);weapon.scale.set(4,2,9);weapon.rotation.setFromEuler(0,-.9,0);this.weapons.push(weapon);
-    this.weaponGlow=add(ball,material([.2,.55,.95],[2,5,10]));this.weaponGlow.position.set(...weaponPosition);
-    // Parallel mechanical rails frame the charging aperture.
-    for(let i=0;i<5;i++){
-      const rail=add(box,material([.28,.25,.32],[.2,.08,.04]));rail.position.set(weaponPosition[0]+(i-2)*.8,weaponPosition[1]+1.4,weaponPosition[2]+2);rail.scale.set(.18,.3,5-i*.55);this.weapons.push(rail);
+    const weapon = await createWeaponModel(ship);
+    this.weapon = weapon; this.add(weapon.root);
+    for (const light of weapon.lights) this.pointLights.push(light);
+    this.textures.push(...weapon.textures); this.geometries.push(...weapon.geometries); this.nativeMaterials.push(...weapon.nativeMaterials);
+    weapon.root.position.set(...CONTRACT.scene.weaponPosition);
+    {
+      // Local +Z fires: rotate it onto the beam direction.
+      const [dx, dy, dz] = this.weaponDirection;
+      weapon.root.rotation.set(-dy, dx, 0, 1 + dz).normalize();
     }
-    this.beam=add(box,material([.45,.75,1],[6,12,20]));
-    this.impact=add(ball,material([1,.4,.12],[5,1.5,.3]));this.impact.position.set(...this.impactPosition);
-    this.core=add(ball,material([1,.7,.32],[12,7,3]));
-    this.shock=add(ball,material([.6,.75,1],[.5,.65,1],.055));
-    this.lightLine=add(box,material([.8,.6,.3],[1.3,.8,.35]));
-    this.shield=add(ball,material([.12,.65,1],[.2,.7,1],.17));
-    this.fragments=this.add(new InstancedMesh({geometry:crustTile(radius,Math.sqrt(4*Math.PI/CONTRACT.budgets.fragments)*.94),material:material([.13,.2,.24],[.05,.022,.01]),count:CONTRACT.budgets.fragments}));this.geometries.add(this.fragments.geometry);
-    for(let i=0;i<this.fragments.count;i++){
-      const y=1-2*(i+.5)/this.fragments.count,a=i*2.399963229728653,r=Math.sqrt(1-y*y);
-      this.fragmentNormals.push([Math.cos(a)*r,y,Math.sin(a)*r]);
-      this.fragments.setColorAt(i,.5+random()*.5,.5+random()*.5,.5+random()*.5);
+    const white = ship.textures[4]!;
+    const cataclysm = await createCataclysm(game.graphics, white, CONTRACT.scene.peakTime - CONTRACT.scene.breakupTime);
+    this.cataclysm = cataclysm; this.add(cataclysm.root); this.pointLights.push(cataclysm.light);
+    this.textures.push(...cataclysm.textures); this.geometries.push(...cataclysm.geometries); this.nativeMaterials.push(...cataclysm.nativeMaterials);
+    const starsGeometry = Geometry.sphere(1, 6, 4); this.geometries.push(starsGeometry);
+    const stars = this.add(new InstancedMesh({ geometry: starsGeometry, material: new PBRMaterial({ texture: white, color: [.4, .5, .7], emissive: [.6, .8, 1.2] }), count: CONTRACT.visual.stars }));
+    const random = seededRandom(CONTRACT.seed);
+    for (let i = 0; i < stars.count; i++) {
+      const y = random() * 2 - 1, angle = random() * Math.PI * 2, r = Math.sqrt(1 - y * y), size = .018 + random() * .025;
+      stars.setMatrixAt(i, pose(Math.cos(angle) * r * 180, y * 180, Math.sin(angle) * r * 180, size, size, size));
     }
-    const crackCount=CONTRACT.budgets.fragments;
-    this.crackMesh=this.add(new InstancedMesh({geometry:box,material:material([1,.45,.16],[3,.8,.18]),count:crackCount}));
-    // Branching great-circle fissures stay on the original intact sphere until release.
-    for(let i=0;i<crackCount;i++){
-      const branch=i%12,step=Math.floor(i/12),a=branch/12*Math.PI*2,dist=step/(crackCount/12)*2.2;
-      const lon=-.48+Math.cos(a)*dist+.065*Math.sin(step*2+branch),lat=.52+Math.sin(a)*dist;
-      const x=Math.sin(lon)*Math.cos(lat),y=Math.sin(lat),z=Math.cos(lon)*Math.cos(lat);
-      this.cracks.push({position:[x*(radius+.025),y*(radius+.025),z*(radius+.025)],rotation:[-lat,lon,a],length:.36+random()*.4,reveal:dist/2.2});
-    }
-    this.debris=this.add(new InstancedMesh({geometry:box,material:material([.28,.3,.32],[.12,.04,.01]),count:CONTRACT.budgets.capitals*4}));
-    const stars=this.add(new InstancedMesh({geometry:box,material:material([.5,.65,.85],[1,1.4,2]),count:CONTRACT.budgets.stars}));
-    for(let i=0;i<stars.count;i++){
-      const y=random()*2-1,a=random()*Math.PI*2,r=Math.sqrt(1-y*y),size=.02+random()*.035;
-      stars.setMatrixAt(i,pose(Math.cos(a)*r*300,y*300,Math.sin(a)*r*300,size,size,size));
-    }
-    const sparks:Burst[]=[],dust:Burst[]=[];
-    for(const event of EVENTS){
-      const flash=add(box,material(event.kind==='shield'?[.2,.7,1]:[1,.35,.13],event.kind==='shield'?[1,3,5]:[5,1,.3]));this.flashes.push(flash);
-      if(event.kind==='kill'||event.kind==='shield'||event.kind==='impact')sparks.push({t:event.t,position:event.position,count:event.kind==='impact'?180:40,spread:.5});
-    }
-    dust.push({t:CONTRACT.scene.breakupTime,position:[0,0,0],count:Math.floor(CONTRACT.budgets.particleCapacity*.65),spread:8});
-    this.particleLayers.push(new AnalyticParticles({capacity:CONTRACT.budgets.particleCapacity,seed:CONTRACT.seed,lifetime:3.5,velocityMin:[-2,-2,-2],velocityMax:[2,2,2],gravity:[0,0,0],startColor:[1,.6,.2,1],endColor:[.4,.12,.03,0],startSize:.18,endSize:.05},sparks));
-    if(CONTRACT.budgets.emitters>1)this.particleLayers.push(new AnalyticParticles({capacity:CONTRACT.budgets.particleCapacity,seed:CONTRACT.seed+1,lifetime:14,velocityMin:[-1.5,-1.1,-1.5],velocityMax:[1.5,1.1,1.5],gravity:[0,0,0],startColor:[.4,.3,.22,.11],endColor:[.14,.16,.2,.025],startSize:.8,endSize:3.2},dust));
-    for(const layer of this.particleLayers)this.add(layer);
+    this.groundRadius = this.measureGround();
+    if (signal.aborted || this.released) { this.releaseResources(); throw new DOMException('Aborted', 'AbortError'); }
+    await Promise.all([game.graphics.prepareTextures(this.textures), ...this.geometries.map(geometry => game.graphics.prepareGeometry(geometry)),
+      ...this.nativeMaterials.map(material => game.graphics.prepareMaterial(material))]);
+    await this.buildStreams();
+    if (signal.aborted || this.released) throw new DOMException('Aborted', 'AbortError');
+    this.planet?.reset(); this.weapon?.reset();
     this.apply(sampleShow(0));
-    if(!game.graphics.prepareGpuParticles)throw new Error('渲染器無法預載 GPU 粒子');
-    await Promise.all([game.graphics.prepareTextures(this.textures),...Array.from(this.geometries,g=>game.graphics.prepareGeometry(g)),...this.particleLayers.map(p=>game.graphics.prepareGpuParticles!(p))]);
-    if(signal.aborted||this.releaseDone)throw new DOMException('Aborted','AbortError');
-    this.prepared=true;
+    this.prepared = true;
   }
 
-  override update(delta:number):void {
-    const t=this.clock.advance(delta,document.hidden);
-    const sample=sampleShow(t);this.apply(sample);this.onFrame(sample);
+  /** Three exhaust plumes follow the hero hull in its own frame. */
+  private async buildStreams(): Promise<void> {
+    const renderer = this.renderer, ship = this.ship;
+    if (!renderer?.prepareGpuParticles || !ship) throw new Error('渲染器不支援 GPU 粒子預載');
+    for (const stream of this.streams) { ship.root.remove(stream); stream.destroy(); }
+    this.streams.length = 0;
+    for (let nozzle = 0; nozzle < 3; nozzle++) {
+      const warm = nozzle === 1;
+      const stream = new GPUParticleEmitter3D({ capacity: CONTRACT.visual.engineParticles.capacity, rate: CONTRACT.visual.engineParticles.rate,
+        lifetime: CONTRACT.visual.engineParticles.lifetime, seed: CONTRACT.seed + nozzle * 101, space: 'local',
+        velocityMin: [-.25, -.25, 4.8], velocityMax: [.25, .25, 7.6], gravity: [0, 0, 0],
+        startColor: warm ? [1, .62, .24, .42] : [.32, .68, 1, .38], endColor: warm ? [.65, .18, .04, 0] : [.04, .2, .5, 0],
+        startSize: .16, endSize: .025 });
+      stream.position.set((nozzle - 1) * .81, -.02, 4.95);
+      try { await renderer.prepareGpuParticles(stream); } catch (error) { stream.destroy(); throw error; }
+      if (this.released) { stream.destroy(); return; }
+      ship.root.add(stream); this.streams.push(stream);
+    }
   }
 
-  private applyCamera(sample:ShowSample):void {
-    this.lens.position.set(...sample.camera.position);this.aim.set(...sample.camera.target);
-    this.lens.fov=sample.camera.fov*Math.PI/180;this.lens.lookAt(this.aim);
+  override update(delta: number): void {
+    if (!this.prepared) return;
+    const t = this.clock.advance(delta, document.hidden);
+    const sample = sampleShow(t); this.apply(sample); this.onFrame(sample);
   }
 
-  private apply(sample:ShowSample):void {
+  private applyCamera(sample: ShowSample): void {
+    let [x, y, z] = sample.camera.position;
+    const { surfaceStart, surfaceEnd } = CONTRACT.scene;
+    if (sample.t >= surfaceStart && sample.t < surfaceEnd) {
+      // The ground camera rides the true terrain surface, not a flat sphere.
+      const scale = this.groundRadius / (Math.hypot(x, y, z) || 1); x *= scale; y *= scale; z *= scale;
+    }
+    this.lens.position.set(x, y, z); this.aim.set(...sample.camera.target);
+    this.lens.fov = sample.camera.fov * Math.PI / 180; this.lens.lookAt(this.aim);
+  }
+
+  private apply(sample: ShowSample): void {
     this.applyCamera(sample);
-    if(!this.planet||!this.fragments||!this.fighters||!this.crackMesh||!this.debris)return;
-    const t=sample.t,scene=CONTRACT.scene,age=Math.max(0,t-scene.breakupTime),radius=CONTRACT.planet.radius;
-    this.planet.visible=t<scene.breakupTime;this.atmosphere!.visible=t<scene.breakupTime;
-    this.fragments.visible=t>=scene.breakupTime;
-    this.fighters.visible=t>=this.arrivalTime;
-    const surface=t>=scene.surfaceStart&&t<scene.surfaceEnd;
-    this.shadow!.visible=surface;
-    if(surface){
-      const x=(t-scene.surfaceStart)*.45-4.5,z=-5+(t-scene.surfaceStart)*.35;
-      const r=radius+.022,y=Math.sqrt(r*r-x*x-z*z),half=Math.sqrt((1+z/r)/2),denom=2*half;
-      this.shadow!.position.set(x,y,z);
-      this.shadow!.rotation.set(-(y/r)/denom,(x/r)/denom,0,half).normalize();
+    const planet = this.planet, ship = this.ship, weapon = this.weapon, cataclysm = this.cataclysm;
+    if (!planet || !ship || !weapon || !cataclysm) return;
+    const t = sample.t, scene = CONTRACT.scene, releaseAge = t - scene.breakupTime;
+    this.postProcessing.exposure = .72 + Math.min(sample.brightness, 2.5) * .14;
+    // Planet: wounded crust until release, then the authored breakup.
+    if (releaseAge < 0) {
+      if (sample.crack !== this.appliedCrack) { planet.setDamage(sample.crack); this.appliedCrack = sample.crack; }
+    } else planet.setBreakup(releaseAge);
+    const wound = t >= scene.impactTime && t < scene.breakupTime;
+    this.woundLight.position.set(...this.woundPoint);
+    this.woundLight.intensity = wound ? 4.5 * Math.min(1, (t - scene.impactTime) / 3) + 14 * Math.exp(-(t - scene.impactTime) / .35) : 0;
+    cataclysm.update(releaseAge);
+    // Hero hull: a close orbital pass in front of the planet during the opening.
+    const hero = t >= HERO.from && t < HERO.to;
+    ship.root.visible = hero;
+    if (hero) {
+      const span = (t - HERO.from) / (HERO.to - HERO.from);
+      const phi = HERO.startAngle + HERO.angularSpeed * (t - HERO.from);
+      ship.root.position.set(Math.sin(phi) * HERO.radius, 3.2 + Math.sin(span * Math.PI) * .8, Math.cos(phi) * HERO.radius);
+      ship.root.scale.set(HERO.scale, HERO.scale, HERO.scale);
+      ship.root.rotation.setFromEuler(.06 * Math.sin(span * 5), Math.atan2(-Math.cos(phi), Math.sin(phi)), -.1 + .06 * Math.sin(span * 7));
     }
-    this.ambientLight=surface?.12:.22;
-    this.directionalLight.intensity=surface?1.1+Math.abs(Math.sin((t-scene.surfaceStart)*.14))*1.1:2;
-    this.postProcessing.exposure=.78+Math.min(sample.brightness,2)*.16;
-    this.planet.rotation.setFromEuler(0,t*.006,0);this.atmosphere!.rotation.setFromEuler(0,t*.006,0);
-    for(let i=0;i<this.fighters.count;i++){
-      const f=this.flights[i],a=f.angle+t*f.speed,sw=age>0?Math.max(0,age-(f.radius-radius)/4):0;
-      let x=Math.cos(a)*f.radius,y=f.height+Math.sin(t*.23+f.phase)*1.2,z=Math.sin(a)*f.radius;
-      if(t>=scene.countdownStart&&t<scene.impactTime){const rush=Math.min(1,(t-scene.countdownStart)/22);x-=rush*8;y+=rush*3;}
-      x+=Math.cos(a)*sw*3;y+=sw*.5;z+=Math.sin(a)*sw*3;
-      let scale=.22*(sw>0?Math.max(.12,1-sw*.12):1),heading=-a-Math.PI/2;
-      if(i===0&&t>=scene.combatStart&&t<scene.combatEnd){
-        const camera=sample.camera.position,ratio=1-8/Math.hypot(...camera);
-        x=camera[0]*ratio+Math.sin(t*.3)*.6;y=camera[1]*ratio-.8;z=camera[2]*ratio;
-        heading=Math.atan2(x,z);scale=.55;
-      }
-      const death=this.kills[i-1];
-      if(death&&t>death.t-5){
-        x=death.position[0]+Math.max(0,death.t-t)*1.3;
-        y=death.position[1];z=death.position[2]+Math.max(0,death.t-t)*.6;
-        heading=1.1;scale=.4;
-        // XYZ requires invertible instances; hide spent fighters beyond the far plane.
-        if(t>=death.t){this.fighters.setMatrixAt(i,pose(0,0,-CONTRACT.camera.far*2,1,1,1));continue;}
-      }
-      this.fighters.setMatrixAt(i,pose(x,y,z,scale,scale,scale,sw*.8,heading,Math.sin(t*.2+f.phase)*.3));
+    for (let i = 0; i < BATTLES.length; i++) {
+      const battle = BATTLES[i]!, entry = this.battles[i]!, shown = battleVisible(battle, t);
+      if (shown) entry.model.update(t - battle.start, Math.max(0, releaseAge));
+      else if (entry.shown) { entry.model.root.visible = false; for (const light of entry.model.lights) light.intensity = 0; }
+      entry.model.root.visible = shown; entry.shown = shown;
     }
-    for(let i=0;i<this.capitals.length;i++){
-      const ship=this.capitals[i];
-      ship.visible=t>=this.arrivalTime;
-      if(i===0&&surface){ship.position.set((t-scene.surfaceStart)*.45-4.5,13,-5+(t-scene.surfaceStart)*.35);ship.rotation.setFromEuler(.04,Math.PI/2,.02);}
-      else {const a=i*1.17+t*.015,r=18+i*1.8,push=Math.max(0,age-(r-radius)/4);ship.position.set(Math.cos(a)*(r+push*3),5+i*.75+push*.7,Math.sin(a)*(r+push*3));ship.rotation.setFromEuler(push*.16,-a,push*.25);}
+    const armed = t >= scene.countdownStart;
+    weapon.root.visible = armed;
+    if (armed) {
+      let pulse = 0;
+      for (const focus of this.focusTimes) if (t >= focus && t < focus + 2) pulse = Math.max(pulse, Math.exp(-(t - focus) * 2.2));
+      weapon.update({ charge: sample.weaponCharge, pulse, beam: t >= scene.impactTime ? t - scene.impactTime : 0,
+        beamLength: this.weaponDistance - weapon.apertureDistance });
     }
-    if(this.fragments.visible)for(let i=0;i<this.fragments.count;i++){
-      const n=this.fragmentNormals[i],travel=age*(1.05+(i%11)*.1)+age*age*.025;
-      this.fragments.setMatrixAt(i,radialPose(...n,radius,travel,age*((i%7)-3)*.12));
-    }
-    this.crackMesh.visible=t>=scene.impactTime&&t<scene.breakupTime;
-    if(this.crackMesh.visible)for(let i=0;i<this.crackMesh.count;i++){
-      const c=this.cracks[i],show=sample.crack>=c.reveal;
-      this.crackMesh.setMatrixAt(i,show?pose(...c.position,.025,c.length,.025,...c.rotation):pose(0,0,-CONTRACT.camera.far*2,1,1,1));
-    }
-    this.impact!.visible=t>=scene.impactTime&&t<scene.breakupTime;
-    const wound=Math.max(.08,Math.min(.75,(t-scene.impactTime)*.12));this.impact!.scale.set(wound,wound,wound);
-    this.weaponGlow!.visible=t>=scene.countdownStart&&t<scene.impactTime;
-    const charge=.1+sample.weaponCharge*1.3;this.weaponGlow!.scale.set(charge,charge,charge);
-    const glow=this.weaponGlow!.material as PBRMaterial;glow.emissive[0]=2+sample.weaponCharge*4;glow.emissive[1]=4+sample.weaponCharge*8;glow.emissive[2]=7+sample.weaponCharge*13;
-    this.beam!.visible=t>=scene.impactTime&&t<scene.impactTime+1.5;
-    const w=scene.weaponPosition,[ix,iy,iz]=this.impactPosition,dx=ix-w[0],dy=iy-w[1],dz=iz-w[2],distance=Math.hypot(dx,dy,dz);
-    this.beam!.position.set((w[0]+ix)/2,(w[1]+iy)/2,(w[2]+iz)/2);this.beam!.scale.set(.22,.22,distance);this.beam!.rotation.setFromEuler(-Math.asin(dy/distance),Math.atan2(dx,dz),0);
-    this.core!.visible=age>0&&t<scene.aftermathTime+3;
-    const peak=Math.max(0,1-Math.abs(t-scene.peakTime)/4),coreScale=age>0?1+peak*5:0;
-    this.core!.scale.set(coreScale,coreScale,coreScale);
-    const core=this.core!.material as PBRMaterial;core.emissive[0]=peak*18;core.emissive[1]=peak*10;core.emissive[2]=peak*4;
-    this.shock!.visible=age>0&&age<7;const shockRadius=radius+age*4;this.shock!.scale.set(shockRadius,shockRadius,shockRadius);
-    this.lightLine!.visible=t>=scene.aftermathTime;this.lightLine!.scale.set(10+age*1.2,.035,.035);
-    const line=this.lightLine!.material as PBRMaterial;line.emissive[0]=Math.max(.2,1.5-age*.12);line.emissive[1]=line.emissive[0]*.6;
-    this.shield!.visible=false;
-    for(let i=0;i<EVENTS.length;i++){
-      const event=EVENTS[i],dt=t-event.t,flash=this.flashes[i];
-      flash.visible=!sample.quiet&&dt>=0&&dt<.65&&event.kind!=='break';flash.position.set(...event.position);
-      if(event.kind==='fire') {flash.scale.set(.025,.025,2.5);flash.rotation.setFromEuler(.2,dt*2+i,0);}
-      else {const size=Math.max(.025,(1-dt/.65)*.65);flash.scale.set(size,size,size);}
-      if(event.kind==='shield'&&dt>=0&&dt<1.2&&!sample.quiet){this.shield!.visible=true;this.shield!.position.set(...event.position);const size=1+dt*1.8;this.shield!.scale.set(size,size*.7,size);}
-    }
-    for(let i=0;i<this.debris.count;i++){
-      const event=this.kills[i%this.kills.length];
-      if(!event||t<event.t){this.debris.setMatrixAt(i,pose(0,0,-CONTRACT.camera.far*2,1,1,1));continue;}
-      const dt=t-event.t,sw=Math.max(0,age-2),angle=i*2.4;
-      this.debris.setMatrixAt(i,pose(event.position[0]+Math.cos(angle)*(dt*.18+sw*2),event.position[1]+Math.sin(angle)*dt*.12,event.position[2]+dt*.12+sw, .1,.16,.25,dt*.6+i,dt*.3,dt*.2));
-    }
-    for(const layer of this.particleLayers)layer.sampleTime=t;
   }
 
-  reset():void { this.clock.reset();for(const layer of this.particleLayers)layer.sampleTime=0;this.apply(sampleShow(0)); }
-  dispose():void { if(this.releaseDone)return;this.releaseDone=true;this.destroy(); }
-  protected override onDestroy():void { this.releaseDone=true;this.releaseResources(); }
-  private releaseResources():void {
-    for(const layer of this.particleLayers)if(!layer.destroyed)layer.destroy();
-    for(const geometry of this.geometries)this.renderer?.unloadGeometry(geometry);
-    for(const texture of this.textures){this.renderer?.unloadTexture(texture);if(!texture.destroyed)texture.destroy();}
-    this.textures.length=0;this.geometries.clear();
+  /** Rewinds every authored state; seeded dust and plume emitters are rebuilt before they are next needed. */
+  reset(): void {
+    this.clock.reset();
+    this.appliedCrack = -1;
+    this.planet?.reset(); this.weapon?.reset();
+    for (const entry of this.battles) entry.shown = true;
+    const sample = sampleShow(0);
+    this.apply(sample);
+    if (this.prepared) {
+      this.rebuilding = this.rebuilding.then(async () => { await this.cataclysm?.reset(); await this.buildStreams(); });
+    } else {
+      this.rebuilding = this.rebuilding.then(() => this.buildStreams());
+    }
+  }
+
+  dispose(): void { if (this.released) return; this.released = true; this.destroy(); }
+  protected override onDestroy(): void { this.released = true; this.releaseResources(); }
+
+  private releaseResources(): void {
+    for (const stream of this.streams) stream.destroy();
+    this.streams.length = 0;
+    for (const entry of this.battles) entry.model.dispose();
+    this.weapon?.dispose(); this.cataclysm?.dispose();
+    for (const material of this.nativeMaterials) material.destroy();
+    for (const geometry of this.geometries) this.renderer?.unloadGeometry(geometry);
+    for (const texture of this.textures) { this.renderer?.unloadTexture(texture); if (!texture.destroyed) texture.destroy(); }
+    this.textures.length = 0; this.geometries.length = 0; this.nativeMaterials.length = 0;
+    this.environmentMap.destroy();
   }
 }

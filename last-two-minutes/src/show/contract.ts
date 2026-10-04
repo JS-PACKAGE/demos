@@ -8,13 +8,12 @@ export interface ShowEvent {
   kind: 'fire' | 'shield' | 'kill' | 'impact' | 'break';
   position: Vec3;
   pan: number;
-  detail?: 'distant' | 'fleet-pass' | 'shockwave';
+  detail?: 'shockwave';
 }
 
 export const CONTRACT = {
   seed: 20261004,
   duration: 120,
-  budgets: { fighters: 128, capitals: 6, emitters: 2, particleCapacity: 2048, shadowLights: 0, textureSize: 1024, fragments: 192, stars: 600 },
   visual: {
     planetRadius: 10, terrainSegments: 256, terrainRings: 128, terrainHeight: .45,
     textureSize: 2048, fragmentCount: 128, fragmentVariants: 6,
@@ -37,7 +36,7 @@ export const CONTRACT = {
   scene: {
     planetRadius: 10, impactTime: 95, breakupTime: 110, peakTime: 112, aftermathTime: 114,
     combatStart: 20, combatEnd: 50, surfaceStart: 50, surfaceEnd: 70, countdownStart: 70, countdownEnd: 95,
-    weaponPosition: [-26, 13, -16] as Vec3,
+    weaponPosition: [-24, 10, 14] as Vec3,
   },
   beats: [
     { start: 0, end: 20, label: '建立重量' },
@@ -53,17 +52,17 @@ export const CONTRACT = {
       { t: 20, position: [0, 7, 34], target: [0, 0, 0], fov: 60 },
     ] },
     { start: 20, end: 50, subject: 'combat', frames: [
-      { t: 20, position: [8, 9, 38], target: [0, 0, 0], fov: 70 },
-      { t: 35, position: [-10, 8, 40], target: [0, 0, 0], fov: 70 },
-      { t: 50, position: [12, 10, 38], target: [0, 0, 0], fov: 70 },
+      { t: 20, position: [4, 8, 35], target: [0, 0, 4], fov: 62 },
+      { t: 35, position: [-6, 8, 36], target: [0, 0, 4], fov: 60 },
+      { t: 50, position: [6, 9, 35], target: [0, 0, 4], fov: 60 },
     ] },
     { start: 50, end: 70, subject: 'surface', frames: [
-      { t: 50, position: [0, 10.2, 0.4], target: [0, 18, -14], fov: 65 },
-      { t: 70, position: [0.6, 10.2, 0.2], target: [-4, 18, -14], fov: 65 },
+      { t: 50, position: [0, 10.2, 0.4], target: [0, 11.1, -14], fov: 65 },
+      { t: 70, position: [0.6, 10.2, 0.2], target: [-4, 11.6, -14], fov: 65 },
     ] },
     { start: 70, end: 75, subject: 'weapon', frames: [
-      { t: 70, position: [-18, 16, 4], target: [-26, 13, -16], fov: 48 },
-      { t: 75, position: [-17, 16, 2], target: [-26, 13, -16], fov: 48 },
+      { t: 70, position: [-19, 13, 31], target: [-24, 10, 14], fov: 48 },
+      { t: 75, position: [-18, 13, 29], target: [-24, 10, 14], fov: 48 },
     ] },
     { start: 75, end: 80, subject: 'defenders', frames: [
       { t: 75, position: [20, 12, 28], target: [10, 11, 6], fov: 58 },
@@ -74,12 +73,12 @@ export const CONTRACT = {
       { t: 85, position: [0, 6, 44], target: [0, 0, 0], fov: 54 },
     ] },
     { start: 85, end: 90, subject: 'weapon', frames: [
-      { t: 85, position: [-16, 15, 0], target: [-26, 13, -16], fov: 44 },
-      { t: 90, position: [-15, 15, -1], target: [-26, 13, -16], fov: 44 },
+      { t: 85, position: [-34, 12, 27], target: [-24, 10, 14], fov: 44 },
+      { t: 90, position: [-33, 12, 26], target: [-24, 10, 14], fov: 44 },
     ] },
     { start: 90, end: 93, subject: 'defenders', frames: [
-      { t: 90, position: [18, 10, 25], target: [7, 10, 7], fov: 58 },
-      { t: 93, position: [16, 10, 24], target: [7, 10, 7], fov: 58 },
+      { t: 90, position: [14, 11, 27], target: [3, 9.5, 11], fov: 58 },
+      { t: 93, position: [13, 11, 26], target: [3, 9.5, 11], fov: 58 },
     ] },
     { start: 93, end: 95, subject: 'planet', frames: [
       { t: 93, position: [0, 6, 44], target: [0, 0, 0], fov: 54 },
@@ -108,22 +107,17 @@ export const CONTRACT = {
   quietWindows: [{ start: 80, end: 85 }, { start: 93, end: 95 }, { start: 95, end: 110 }],
 } as const;
 
+/**
+ * Director marks that the visuals are authored to meet exactly. Gun and impact
+ * sounds for the ordinary exchanges come from the battle scripts themselves
+ * (src/show/battles.ts) so every cue lands on a visible muzzle flash or hit.
+ */
 export const EVENTS: readonly ShowEvent[] = [
-  { id: 'first-fire', t: 6, kind: 'fire', position: [-20, 10, -24], pan: -0.7, detail: 'distant' },
-  { id: 'fleet-arrival', t: 12, kind: 'fire', position: [16, 8, 14], pan: 0.6, detail: 'fleet-pass' },
-  { id: 'crossfire-a', t: 22, kind: 'fire', position: [12, 5, 16], pan: 0.65 },
-  { id: 'shield-a', t: 26, kind: 'shield', position: [-12, 7, 12], pan: -0.5 },
-  { id: 'crossfire-b', t: 31, kind: 'fire', position: [-15, 6, 18], pan: -0.7 },
-  { id: 'wreck-a', t: 35, kind: 'kill', position: [16, 8, 8], pan: 0.7 },
-  { id: 'crossfire-c', t: 41, kind: 'fire', position: [14, 9, 20], pan: 0.6 },
-  { id: 'shield-b', t: 46, kind: 'shield', position: [-16, 5, 8], pan: -0.6 },
-  { id: 'sky-fire-a', t: 53, kind: 'fire', position: [-8, 19, -10], pan: -0.6 },
-  { id: 'sky-fire-b', t: 61, kind: 'fire', position: [10, 20, -14], pan: 0.7 },
-  { id: 'sky-fire-c', t: 67, kind: 'fire', position: [-4, 18, -8], pan: -0.3 },
-  { id: 'weapon-focus', t: 72, kind: 'fire', position: [-26, 13, -16], pan: -0.7 },
+  { id: 'wreck-a', t: 35, kind: 'kill', position: [11.5, .15, 13.6], pan: 0.95 },
+  { id: 'weapon-focus', t: 72, kind: 'fire', position: [-24, 10, 14], pan: -0.7 },
   { id: 'defender-one', t: 77, kind: 'kill', position: [10, 11, 6], pan: 0.4 },
-  { id: 'weapon-focus-two', t: 87, kind: 'fire', position: [-26, 13, -16], pan: -0.7 },
-  { id: 'defender-two', t: 91, kind: 'kill', position: [7, 10, 7], pan: 0.3 },
+  { id: 'weapon-focus-two', t: 87, kind: 'fire', position: [-24, 10, 14], pan: -0.7 },
+  { id: 'defender-two', t: 91, kind: 'kill', position: [3, 9.5, 11], pan: 0.3 },
   { id: 'planet-impact', t: 95, kind: 'impact', position: [-5.5, 5, 6.7], pan: 0 },
   { id: 'planet-break', t: 110, kind: 'break', position: [0, 0, 0], pan: 0 },
   { id: 'shockwave', t: 112, kind: 'break', position: [0, 0, 0], pan: 0, detail: 'shockwave' },

@@ -1,5 +1,5 @@
 import { Geometry, Group, Mesh, NativeMaterial3D, Object3D, PBRMaterial, PointLight, Texture } from 'xyz.js';
-import { COMBAT_SHIPS, COMBAT_SHOTS, sampleCombatGun, sampleCombatProjectile, sampleCombatShip } from '../show/combat.ts';
+import { COMBAT_SCRIPT, sampleCombatGun, sampleCombatProjectile, sampleCombatShip, type CombatScript } from '../show/combat.ts';
 import type { ShipModel } from './ship-model.ts';
 
 type Triple = [number, number, number];
@@ -9,7 +9,8 @@ export interface CombatModel {
   geometries: Geometry[];
   nativeMaterials: NativeMaterial3D[];
   lights: PointLight[];
-  update(time: number): void;
+  /** `shock` is seconds since the planetary shockwave began pushing ships away. */
+  update(time: number, shock?: number): void;
   reset(): void;
   dispose(): void;
 }
@@ -51,11 +52,11 @@ function aim(mesh: Object3D, x: number, y: number, z: number): void {
   else mesh.rotation.set(dy,-dx,0,1-dz).normalize();
 }
 
-export async function createCombatModel(source: ShipModel): Promise<CombatModel> {
+export async function createCombatModel(source: ShipModel, script: CombatScript = COMBAT_SCRIPT): Promise<CombatModel> {
   const root=new Group();
   const textures=source.textures,geometries:Geometry[]=[],nativeMaterials:NativeMaterial3D[]=[],lights:PointLight[]=[];
   const white=textures[4];
-  const ships: ShipModel[]=COMBAT_SHIPS.map((definition)=>{
+  const ships: ShipModel[]=script.ships.map((definition)=>{
     const nodes=new Map<Object3D,Object3D>(),materials=new Map<PBRMaterial,PBRMaterial>();
     const clone=(node:Object3D):Object3D=>{
       let copy:Object3D;
@@ -137,20 +138,19 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
 #endif`});
     nativeMaterials.push(material);return material;
   };
-  const effects=COMBAT_SHOTS.map((shot,index)=>{
-    const faction=COMBAT_SHIPS[shot.source].side==='attacker'?1:0;
+  const effects=script.shots.map((shot,index)=>{
+    const faction=script.ships[shot.source].side==='attacker'?1:0;
     const projectile=root.add(new Mesh({geometry:boltGeometry,material:projectileMaterials[faction],castShadow:false,receiveShadow:false}));
     const flash=root.add(new Mesh({geometry:flashGeometry,material:projectileMaterials[faction],castShadow:false,receiveShadow:false}));
     const direction:Triple=[shot.end[0]-shot.start[0],shot.end[1]-shot.start[1],shot.end[2]-shot.start[2]];
     aim(projectile,...direction);aim(flash,...direction);
     const hitPose={x:0,y:0,z:0,yaw:0,scale:1,destroyed:false};
-    sampleCombatShip(shot.target,shot.hitTime,hitPose);
-    const dx=(shot.end[0]-hitPose.x)/hitPose.scale,dy=(shot.end[1]-hitPose.y)/hitPose.scale,dz=(shot.end[2]-hitPose.z)/hitPose.scale;
+    sampleCombatShip(shot.target,shot.hitTime,hitPose,script);
     const c=Math.cos(hitPose.yaw),s=Math.sin(hitPose.yaw);
-    const local:Triple=[c*dx-s*dz,dy,s*dx+c*dz];
-    // This panel slopes along Z; scorch and venting follow the contacted armor normal.
-    const localNormal:Triple=[0,.9957,-.0926];
-    const normal:Triple=[s*localNormal[2],localNormal[1],c*localNormal[2]];
+    const local:Triple=[...shot.local];
+    // Contact normals are authored in the target hull's frame (armor slope or shield bubble).
+    const localNormal:Triple=[...shot.normal];
+    const normal:Triple=[c*localNormal[0]+s*localNormal[2],localNormal[1],-s*localNormal[0]+c*localNormal[2]];
     const contact=root.add(new Group());
     const rippleMaterial=fadingMaterial(faction===1?[.3,.7,1]:[.6,.5,1],`Shield ripple ${shot.id}`,0);
     const ripple=contact.add(new Mesh({geometry:rippleGeometry,material:rippleMaterial,castShadow:false,receiveShadow:false}));aim(ripple,...localNormal);
@@ -178,23 +178,34 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
       return {mesh,material,velocity,origin,size:armorFragment?.16+(i%4)*.075:.012+(i%4)*.009,phase:a};
     });
     const light=new PointLight({intensity:0,color:shot.result==='shield'?[.28,.6,1]:[1,.36,.08],range:3,priority:2});lights.push(light);
-    return {shot,projectile,flash,contact,ripple,rippleMaterial,scorch,breach,heat,flames,flameMaterial,gas,gasMaterial,fragments,light,normal,local};
+    return {shot,projectile,flash,contact,ripple,rippleMaterial,scorch,breach,heat,flames,flameMaterial,gas,gasMaterial,fragments,light,normal,local,phase:-2};
   });
   const shipPose={x:0,y:0,z:0,yaw:0,scale:1,destroyed:false},gunPose={yaw:0,pitch:0,recoil:0},projectilePose={x:0,y:0,z:0,visible:false};
-  const update=(time:number):void=>{
+  const hideEffect=(effect:typeof effects[number]):void=>{
+    effect.projectile.visible=effect.flash.visible=effect.contact.visible=false;
+    for(const gas of effect.gas)gas.visible=false;
+    for(const fragment of effect.fragments)fragment.mesh.visible=false;
+    effect.light.intensity=0;
+  };
+  const update=(time:number,shock=0):void=>{
     for(let i=0;i<ships.length;i++){
-      sampleCombatShip(i,time,shipPose);const ship=ships[i];
+      sampleCombatShip(i,time,shipPose,script,shock);const ship=ships[i];
       ship.root.position.set(shipPose.x,shipPose.y,shipPose.z);ship.root.rotation.setFromEuler(0,shipPose.yaw,0);ship.root.scale.set(shipPose.scale,shipPose.scale,shipPose.scale);ship.root.visible=!shipPose.destroyed;
-      for(let j=0;j<ship.turrets.length;j++){sampleCombatGun(i,j,time,gunPose);const turret=ship.turrets[j];turret.root.rotation.setFromEuler(0,gunPose.yaw,0);turret.barrels.rotation.setFromEuler(gunPose.pitch,0,0);turret.barrels.position.z=gunPose.recoil;}
+      for(let j=0;j<ship.turrets.length;j++){sampleCombatGun(i,j,time,gunPose,script.shots);const turret=ship.turrets[j];turret.root.rotation.setFromEuler(0,gunPose.yaw,0);turret.barrels.rotation.setFromEuler(gunPose.pitch,0,0);turret.barrels.position.z=gunPose.recoil;}
     }
     for(const effect of effects){
       const {shot}=effect,age=time-shot.hitTime,launchAge=time-shot.fireTime;
+      // Effects outside their lifetime are hidden once and then skipped entirely.
+      const settled=(shot.result==='shield'&&age>1)||(shot.result==='kill'&&age>12.5);
+      const phase=time<shot.fireTime-.001?-1:settled?1:0;
+      if(phase!==0){if(effect.phase!==phase){hideEffect(effect);effect.phase=phase;}continue;}
+      effect.phase=0;
       sampleCombatProjectile(shot,time,projectilePose);effect.projectile.visible=projectilePose.visible;effect.projectile.position.set(projectilePose.x,projectilePose.y,projectilePose.z);
       // The streak trails its physical leading point, clipped during initial launch.
       const trail=Math.min(1,Math.max(0,launchAge)*18);effect.projectile.scale.set(1,1,trail);
       effect.flash.visible=launchAge>=0&&launchAge<.085;effect.flash.position.set(shot.start[0],shot.start[1],shot.start[2]);const flashScale=Math.max(0,1-launchAge/.085);effect.flash.scale.set(flashScale,flashScale,flashScale);
       const shield=shot.result==='shield',kill=shot.result==='kill',hit=age>=0;
-      sampleCombatShip(shot.target,time,shipPose);const c=Math.cos(shipPose.yaw),s=Math.sin(shipPose.yaw);
+      sampleCombatShip(shot.target,time,shipPose,script,shock);const c=Math.cos(shipPose.yaw),s=Math.sin(shipPose.yaw);
       const px=shipPose.x+(c*effect.local[0]+s*effect.local[2])*shipPose.scale;
       const py=shipPose.y+effect.local[1]*shipPose.scale;
       const pz=shipPose.z+(-s*effect.local[0]+c*effect.local[2])*shipPose.scale;
