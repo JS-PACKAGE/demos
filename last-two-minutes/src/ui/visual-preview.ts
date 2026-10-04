@@ -20,7 +20,7 @@ const descriptions:Record<PreviewView,[string,string]>={
   flyby:['艦船掠過星球','前景裝甲、艦橋與引擎；中景曲面地形與薄大氣；背景星域。'],
   wounded:['命中後，板塊錯位與塌陷','曲面地殼逐塊翹起、錯位；命中坑塌陷，裂隙露出厚岩層與深處熱光。'],
   aftermath:['曲面地殼翻開，然後暗下來','不規則厚殼與破裂剖面；核心釋放、震波、塵埃與遠近殘骸。'],
-  combat:['戰艦交火：護盾、燃燒與擊毀','炮口瞄準移動艦船；實際彈道、局部護盾、裝甲破口燃燒與冷卻中的爆炸殘骸。'],
+  combat:['戰艦交火：瞄準、護盾與擊毀','各砲塔獨立索敵、轉向與穩定瞄準；隨機裝填節奏、雙向彈道、受創燃燒與冷卻殘骸。'],
 };
 let runtime:VisualPreview|undefined;
 let busy=false, lastTick=-1, lastMetric=-1, idle:number|undefined;

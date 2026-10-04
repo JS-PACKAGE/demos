@@ -1,4 +1,4 @@
-import type { Vec3 } from './contract.ts';
+import { CONTRACT, seededRandom, type Vec3 } from './contract.ts';
 import { BARREL_HEIGHT, BARREL_OFFSETS, MUZZLE_Z, SHIP_TURRET_MOUNTS } from '../scene/ship-hardpoints.ts';
 
 export interface CombatShip {
@@ -14,6 +14,12 @@ export interface CombatShot {
   readonly target: number;
   readonly turret: number;
   readonly barrel: number;
+  readonly aimStart: number;
+  readonly aimEnd: number;
+  readonly fromYaw: number;
+  readonly fromPitch: number;
+  readonly aimYaw: number;
+  readonly aimPitch: number;
   readonly fireTime: number;
   readonly hitTime: number;
   readonly start: Vec3;
@@ -27,6 +33,8 @@ export interface CombatProjectilePose extends CombatPoint { visible: boolean }
 
 export const COMBAT_DURATION = 12;
 export const COMBAT_PROJECTILE_SPEED = 18;
+export const COMBAT_YAW_SPEED = 1.2;
+export const COMBAT_PITCH_SPEED = .65;
 export const COMBAT_SHIPS: readonly CombatShip[] = Object.freeze(([
   { side: 'defender', scale: .43, origin: [-8, 0, 20], velocity: [.12, 0, -.1], yaw: -Math.PI / 2 },
   { side: 'defender', scale: .28, origin: [-6.8, .2, 14], velocity: [.1, 0, .08], yaw: -Math.PI / 2 },
@@ -78,7 +86,9 @@ export function sampleCombatMuzzle(ship: number, turret: number, barrel: number,
   out.z = oz + scale * (-s * x + c * z);
 }
 
-function solveShot(id: string, source: number, target: number, turret: number, barrel: number, fireTime: number, result: CombatShot['result']): CombatShot {
+type BallisticShot = Omit<CombatShot, 'aimStart' | 'aimEnd' | 'fromYaw' | 'fromPitch' | 'aimYaw' | 'aimPitch'>;
+
+function solveShot(id: string, source: number, target: number, turret: number, barrel: number, fireTime: number, result: CombatShot['result']): BallisticShot {
   const endpoint: CombatPoint = { x: 0, y: 0, z: 0 }, muzzle: CombatPoint = { x: 0, y: 0, z: 0 };
   const aim: [number, number, number] = [0, 0, 0];
   let lo = 0, hi = 2;
@@ -99,20 +109,63 @@ function solveShot(id: string, source: number, target: number, turret: number, b
     start: Object.freeze([muzzle.x, muzzle.y, muzzle.z] as const), end: Object.freeze([...aim] as Vec3) });
 }
 
-// Alternating readable exchanges. Escort 3 burns for several seconds before
-// its final arrival at ~8.5s; no escort shot remains in flight at destruction.
-const volleys: readonly (readonly [number, number, number, CombatShot['result']])[] = [
-  [.35, 0, 2, 'shield'], [1.2, 2, 0, 'shield'],
-  [2.05, 1, 3, 'shield'], [2.95, 3, 1, 'shield'],
-  [3.85, 0, 2, 'hull'], [4.7, 1, 3, 'hull'],
-  [5.55, 2, 0, 'hull'], [6.35, 3, 1, 'hull'],
-  [7.05, 1, 3, 'hull'], [7.8, 1, 3, 'kill'],
-];
-export const COMBAT_SHOTS: readonly CombatShot[] = Object.freeze(volleys.flatMap(([time, source, target, result], volley) => {
-  // Final volley: one preceding breach and exactly one fatal arrival.
-  return [0, 1].map(barrel => solveShot(`combat-${volley}-${barrel}`, source, target, 0, barrel, time + barrel * .1,
-    result === 'kill' && barrel === 0 ? 'hull' : result));
-}));
+function sampleShotAim(shot: BallisticShot, out: CombatGunPose): void {
+  const definition = COMBAT_SHIPS[shot.source]!, mount = SHIP_TURRET_MOUNTS[shot.turret]!;
+  const wx = (shot.end[0] - definition.origin[0] - definition.velocity[0] * shot.fireTime) / definition.scale;
+  const wz = (shot.end[2] - definition.origin[2] - definition.velocity[2] * shot.fireTime) / definition.scale;
+  const c = Math.cos(definition.yaw), s = Math.sin(definition.yaw);
+  const dx = c * wx - s * wz - mount[0];
+  const dy = (shot.end[1] - definition.origin[1] - definition.velocity[1] * shot.fireTime) / definition.scale - mount[1] - BARREL_HEIGHT;
+  const dz = s * wx + c * wz - mount[2], offset = BARREL_OFFSETS[shot.barrel]!;
+  out.yaw = gunYaw(dx, dz, offset); out.pitch = gunPitch(dx, dy, dz, offset);
+}
+
+/** Independent seeded gun crews: reload, acquire, slew, settle, then fire. */
+export function createCombatShots(seed: number): readonly CombatShot[] {
+  const shots: CombatShot[] = [];
+  for (let source = 0; source < COMBAT_SHIPS.length; source++) {
+    for (let turret = 0; turret < 2; turret++) {
+      const random = seededRandom(seed + source * 977 + turret * 131);
+      let fromYaw = (random() - .5) * 1.1, fromPitch = (random() - .5) * .18;
+      let aimStart = .05 + random() * 1.5, sequence = 0;
+      const aim: CombatGunPose = { yaw: 0, pitch: 0, recoil: 0 };
+      const plan = (target: number, earliestFire: number, fatal = false): CombatShot => {
+        const barrel = random() < .5 ? 0 : 1, settle = .18 + random() * .22;
+        const minimumSlew = .55 + random() * .35;
+        const id = `combat-${source}-${turret}-${sequence++}`;
+        let duration = minimumSlew, fireTime = Math.max(earliestFire, aimStart + duration + settle);
+        let shot: BallisticShot;
+        // Arrival and slew duration depend on the future launch pose. Resolve
+        // that dependency once, never with frame-time RNG or target snapping.
+        for (let iteration = 0; iteration < 12; iteration++) {
+          shot = solveShot(id, source, target, turret, barrel, fireTime, fatal ? 'kill' : fireTime < 2.2 ? 'shield' : 'hull');
+          sampleShotAim(shot, aim);
+          // Quintic easing peaks at 1.875 times its average angular speed.
+          duration = Math.max(minimumSlew, 1.875 * Math.abs(aim.yaw - fromYaw) / COMBAT_YAW_SPEED,
+            1.875 * Math.abs(aim.pitch - fromPitch) / COMBAT_PITCH_SPEED) + .002;
+          fireTime = Math.max(earliestFire, aimStart + duration + settle);
+        }
+        shot = solveShot(id, source, target, turret, barrel, fireTime, fatal ? 'kill' : fireTime < 2.2 ? 'shield' : 'hull');
+        sampleShotAim(shot, aim);
+        return Object.freeze({ ...shot, aimStart, aimEnd: aimStart + duration, fromYaw, fromPitch, aimYaw: aim.yaw, aimPitch: aim.pitch });
+      };
+      while (true) {
+        const target = source < 2 ? 2 + Math.floor(random() * 2) : Math.floor(random() * 2);
+        const shot = plan(target, aimStart);
+        // Leave space for the authored fatal beat and its cooling aftermath,
+        // but never synchronize the independent crews into alternating turns.
+        if (shot.fireTime > (source === 1 && turret === 0 ? 5.7 : 6.8)) break;
+        shots.push(shot);
+        fromYaw = shot.aimYaw; fromPitch = shot.aimPitch;
+        aimStart = shot.fireTime + .5 + random() * 1.9;
+      }
+      if (source === 1 && turret === 0) shots.push(plan(3, 7.75 + random() * .18, true));
+    }
+  }
+  return Object.freeze(shots.sort((a, b) => a.fireTime - b.fireTime));
+}
+
+export const COMBAT_SHOTS = createCombatShots(CONTRACT.seed);
 export const COMBAT_KILL_TIME = COMBAT_SHOTS.find(shot => shot.result === 'kill')!.hitTime;
 
 export function sampleCombatShip(index: number, time: number, out: CombatShipPose): void {
@@ -128,19 +181,16 @@ export function sampleCombatGun(ship: number, turret: number, time: number, out:
   let selected: CombatShot | undefined;
   for (const shot of COMBAT_SHOTS) {
     if (shot.source !== ship || shot.turret !== turret) continue;
-    if (!selected || shot.fireTime <= time) selected = shot;
-    if (shot.fireTime > time) break;
+    if (!selected) selected = shot;
+    if (shot.aimStart > time) break;
+    selected = shot;
   }
   out.yaw = 0; out.pitch = 0; out.recoil = 0;
   if (!selected) return;
-  const definition = COMBAT_SHIPS[ship]!, mount = SHIP_TURRET_MOUNTS[turret]!;
-  const wx = (selected.end[0] - definition.origin[0] - definition.velocity[0] * time) / definition.scale;
-  const wz = (selected.end[2] - definition.origin[2] - definition.velocity[2] * time) / definition.scale;
-  const c = Math.cos(definition.yaw), s = Math.sin(definition.yaw);
-  const dx = c * wx - s * wz - mount[0];
-  const dy = (selected.end[1] - definition.origin[1] - definition.velocity[1] * time) / definition.scale - mount[1] - BARREL_HEIGHT;
-  const dz = s * wx + c * wz - mount[2], offset = BARREL_OFFSETS[selected.barrel]!;
-  out.yaw = gunYaw(dx, dz, offset); out.pitch = gunPitch(dx, dy, dz, offset);
+  const phase = Math.max(0, Math.min(1, (time - selected.aimStart) / (selected.aimEnd - selected.aimStart)));
+  const blend = phase * phase * phase * (phase * (phase * 6 - 15) + 10);
+  out.yaw = selected.fromYaw + (selected.aimYaw - selected.fromYaw) * blend;
+  out.pitch = selected.fromPitch + (selected.aimPitch - selected.fromPitch) * blend;
   const age = time - selected.fireTime;
   if (age > 0 && age < .28) out.recoil = .13 * Math.sin(Math.PI * age / .28) * (1 - age / .28);
 }

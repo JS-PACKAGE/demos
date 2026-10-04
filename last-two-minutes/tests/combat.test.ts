@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COMBAT_ARMOR_POINT, COMBAT_DURATION, COMBAT_KILL_TIME, COMBAT_PROJECTILE_SPEED,
-  COMBAT_SHIPS, COMBAT_SHOTS, sampleCombatArmor, sampleCombatGun,
-  sampleCombatMuzzle, sampleCombatProjectile, sampleCombatShip,
+  COMBAT_YAW_SPEED, COMBAT_PITCH_SPEED, COMBAT_SHIPS, COMBAT_SHOTS, createCombatShots,
+  sampleCombatArmor, sampleCombatGun, sampleCombatMuzzle, sampleCombatProjectile, sampleCombatShip,
 } from '../src/show/combat.ts';
 import { BARREL_HEIGHT, BARREL_OFFSETS, MUZZLE_Z, SHIP_TURRET_MOUNTS } from '../src/scene/ship-hardpoints.ts';
 
@@ -19,31 +19,60 @@ function worldFromLocal(ship: number, time: number, x: number, y: number, z: num
   ];
 }
 
-test('opposing volleys have readable travel, ordered damage and a final fatal arrival', () => {
-  assert.equal(COMBAT_DURATION, 12);
-  assert.equal(COMBAT_SHIPS.length, 4);
-  assert.ok(COMBAT_SHOTS.length >= 18 && COMBAT_SHOTS.length <= 24);
-  assert.equal(new Set(COMBAT_SHOTS.map(shot => shot.id)).size, COMBAT_SHOTS.length);
-  assert.deepEqual(new Set(COMBAT_SHOTS.map(shot => COMBAT_SHIPS[shot.source]!.side)), new Set(['defender', 'attacker']));
-  for (let index = 0; index < COMBAT_SHOTS.length; index++) {
-    const shot = COMBAT_SHOTS[index]!;
-    assert.notEqual(COMBAT_SHIPS[shot.source]!.side, COMBAT_SHIPS[shot.target]!.side);
-    assert.ok(shot.hitTime - shot.fireTime >= .55);
-    assert.ok(shot.hitTime < COMBAT_DURATION);
-    if (index > 0) assert.ok(shot.fireTime > COMBAT_SHOTS[index - 1]!.fireTime);
-    const distance = Math.hypot(...shot.start.map((coordinate, axis) => shot.end[axis]! - coordinate));
-    close(distance / (shot.hitTime - shot.fireTime), COMBAT_PROJECTILE_SPEED);
+test('independent crews overlap opposing fire rather than alternating turns', () => {
+  assert.ok(COMBAT_SHOTS.some((shot, index) => index > 0
+    && COMBAT_SHIPS[shot.source]!.side === COMBAT_SHIPS[COMBAT_SHOTS[index - 1]!.source]!.side));
+  assert.ok(COMBAT_SHOTS.some(shot => COMBAT_SHOTS.some(other =>
+    COMBAT_SHIPS[shot.source]!.side !== COMBAT_SHIPS[other.source]!.side
+    && other.fireTime < shot.hitTime && other.hitTime > shot.fireTime)));
+  for (let source = 0; source < COMBAT_SHIPS.length; source++) {
+    const own = COMBAT_SHOTS.filter(shot => shot.source === source);
+    assert.ok(own.some(shot => shot.turret === 0) && own.some(shot => shot.turret === 1));
   }
-  const kills = COMBAT_SHOTS.filter(shot => shot.result === 'kill');
-  assert.equal(kills.length, 1);
-  assert.equal(kills[0]!.target, 3);
-  assert.ok(COMBAT_KILL_TIME >= 8 && COMBAT_KILL_TIME <= 9);
-  const firstBreach = COMBAT_SHOTS.find(shot => shot.target === 3 && shot.result === 'hull')!;
-  assert.ok(COMBAT_KILL_TIME - firstBreach.hitTime > 2.5, 'breached escort has sustained burning time');
-  assert.ok(COMBAT_DURATION - COMBAT_KILL_TIME >= 3, 'wreck remains visible in aftermath');
-  const lastShield = Math.max(...COMBAT_SHOTS.filter(shot => shot.result === 'shield').map(shot => shot.hitTime));
-  const firstHull = Math.min(...COMBAT_SHOTS.filter(shot => shot.result === 'hull').map(shot => shot.hitTime));
-  assert.ok(lastShield < firstHull);
+  assert.ok(COMBAT_SHOTS.some(shot => COMBAT_SHOTS.some(other =>
+    other.source === shot.source && other.turret === shot.turret && other.target !== shot.target)),
+    'a crew must visibly slew to reacquire another hostile ship');
+});
+
+test('seeded schedules vary cadence and targets while replaying the same battle exactly', () => {
+  const first = createCombatShots(20261004), replay = createCombatShots(20261004), different = createCombatShots(20261005);
+  assert.deepEqual(replay, first);
+  assert.notDeepEqual(different.map(shot => [shot.fireTime, shot.target]), first.map(shot => [shot.fireTime, shot.target]));
+  for (const shots of [first, different]) {
+    const fatal = shots.find(shot => shot.result === 'kill')!;
+    assert.ok(fatal.hitTime < COMBAT_DURATION);
+    for (const shot of shots) {
+      assert.notEqual(COMBAT_SHIPS[shot.source]!.side, COMBAT_SHIPS[shot.target]!.side);
+      const distance = Math.hypot(...shot.start.map((coordinate, axis) => shot.end[axis]! - coordinate));
+      close(distance / (shot.hitTime - shot.fireTime), COMBAT_PROJECTILE_SPEED);
+      if (shot.target === fatal.target) assert.ok(shot.hitTime <= fatal.hitTime);
+      if (shot.source === fatal.target) assert.ok(shot.hitTime < fatal.hitTime);
+    }
+  }
+});
+
+test('guns slew continuously within angular limits and settle before launching', () => {
+  const gun = { yaw: 0, pitch: 0, recoil: 0 }, previous = { yaw: 0, pitch: 0, recoil: 0 };
+  for (const shot of COMBAT_SHOTS) {
+    assert.ok(shot.aimStart < shot.aimEnd && shot.aimEnd < shot.fireTime);
+    sampleCombatGun(shot.source, shot.turret, shot.aimStart - 1e-6, previous);
+    sampleCombatGun(shot.source, shot.turret, shot.aimStart, gun);
+    close(gun.yaw, previous.yaw, 1e-7); close(gun.pitch, previous.pitch, 1e-7);
+    sampleCombatGun(shot.source, shot.turret, (shot.aimStart + shot.aimEnd) / 2, gun);
+    assert.ok(Math.abs(gun.yaw - shot.fromYaw) > 1e-6 || Math.abs(gun.pitch - shot.fromPitch) > 1e-6);
+    assert.ok(Math.abs(gun.yaw - shot.aimYaw) > 1e-6 || Math.abs(gun.pitch - shot.aimPitch) > 1e-6);
+    sampleCombatGun(shot.source, shot.turret, shot.aimStart, previous);
+    const step = (shot.aimEnd - shot.aimStart) / 100;
+    for (let tick = 1; tick <= 100; tick++) {
+      sampleCombatGun(shot.source, shot.turret, shot.aimStart + tick * step, gun);
+      assert.ok(Math.abs(gun.yaw - previous.yaw) / step <= COMBAT_YAW_SPEED + 1e-6);
+      assert.ok(Math.abs(gun.pitch - previous.pitch) / step <= COMBAT_PITCH_SPEED + 1e-6);
+      Object.assign(previous, gun);
+    }
+    sampleCombatGun(shot.source, shot.turret, (shot.aimEnd + shot.fireTime) / 2, gun);
+    close(gun.yaw, shot.aimYaw); close(gun.pitch, shot.aimPitch);
+    assert.equal(gun.recoil, 0);
+  }
 });
 
 test('articulated yaw/pitch bore launches exactly at a moving physical barrel and points at intercept', () => {
