@@ -15,7 +15,7 @@ export const CONTRACT = {
   seed: 20261004,
   duration: 120,
   visual: {
-    planetRadius: 10, terrainSegments: 256, terrainRings: 128, terrainHeight: .45,
+    planetRadius: 10, terrainSegments: 256, terrainRings: 128, terrainHeight: .045,
     textureSize: 2048, fragmentCount: 128, fragmentVariants: 6,
     dustCapacity: 1024, previewDuration: 12,
     engineParticles: { capacity: 256, rate: 180, lifetime: .8 },
@@ -48,7 +48,15 @@ export const CONTRACT = {
   ],
   cameraTrack: [
     { start: 0, end: 20, subject: 'planet', frames: [
-      { t: 0, position: [0, 3, 12], target: [0, 1, 0], fov: 60 },
+      { t: 0, position: [-8.5, 4, 9], target: [0, 1, 0], fov: 60 },
+      { t: 1, position: [-12, 5, 12], target: [-10.485, 3.2, 7.342], fov: 55 },
+      { t: 3, position: [-10, 5.7, 14.2], target: [-7.704, 3.497, 10.226], fov: 55 },
+      { t: 5, position: [-6, 5.7, 16.5], target: [-4.167, 3.752, 12.102], fov: 52 },
+      { t: 7, position: [-.5, 5.5, 17.7], target: [-.223, 3.928, 12.798], fov: 52 },
+      { t: 9, position: [5, 5.5, 17.2], target: [3.747, 3.999, 12.241], fov: 55 },
+      { t: 12, position: [13, 6.2, 15.8], target: [6, 2.7, 5.5], fov: 60 },
+      { t: 15, position: [12, 7, 24], target: [2, 1, 1], fov: 60 },
+      { t: 17.5, position: [0, 6.5, 31.25], target: [0, 0, 0], fov: 60 },
       { t: 20, position: [0, 7, 34], target: [0, 0, 0], fov: 60 },
     ] },
     { start: 20, end: 50, subject: 'combat', frames: [
@@ -85,9 +93,12 @@ export const CONTRACT = {
       { t: 95, position: [0, 6, 44], target: [0, 0, 0], fov: 54 },
     ] },
     { start: 95, end: 120, subject: 'planet', frames: [
-      { t: 95, position: [12, 8, 42], target: [0, 0, 0], fov: 58 },
-      { t: 104, position: [0, 12, 64], target: [0, 0, 0], fov: 58 },
-      { t: 120, position: [0, 12, 64], target: [0, 0, 0], fov: 58 },
+      { t: 95, position: [16, 7, 29], target: [-1, 1, 0], fov: 46 },
+      { t: 100, position: [12, 6, 29], target: [-1, 1, 0], fov: 46 },
+      { t: 108, position: [10, 7, 30], target: [0, 0, 0], fov: 46 },
+      { t: 110, position: [10, 7, 30], target: [0, 0, 0], fov: 46 },
+      { t: 114, position: [8, 9, 43], target: [0, 0, 0], fov: 46 },
+      { t: 120, position: [4, 10, 61], target: [0, 0, 0], fov: 46 },
     ] },
   ] as readonly CameraShot[],
   brightness: [

@@ -1,5 +1,8 @@
-import { Geometry, Group, Mesh, NativeMaterial3D, Object3D, PBRMaterial, PointLight, Texture } from 'xyz.js';
-import { COMBAT_SCRIPT, sampleCombatGun, sampleCombatProjectile, sampleCombatShip, type CombatScript } from '../show/combat.ts';
+import { Decal, Geometry, Group, InstancedMesh, Mesh, NativeMaterial3D, Object3D, PBRMaterial, PointLight, Texture } from 'xyz.js';
+import { CONTRACT } from '../show/contract.ts';
+import { COMBAT_SCRIPT, sampleCombatGun, sampleCombatProjectile, sampleCombatShip } from '../show/combat.ts';
+import type { CombatScript } from '../show/combat.ts';
+import { createShipModel } from './ship-model.ts';
 import type { ShipModel } from './ship-model.ts';
 
 type Triple = [number, number, number];
@@ -16,14 +19,14 @@ export interface CombatModel {
 }
 
 /** Faceted radial profiles supply tapered bolts, torn plates, gas lobes and impact rings. */
-function radialGeometry(profile: readonly (readonly [number, number])[], segments: number, irregular = false): Geometry {
+function radialGeometry(profile: readonly (readonly [number, number])[], segments: number, irregular = false, flatten = 1, planar = false): Geometry {
   const positions: number[] = [], normals: number[] = [], uvs: number[] = [], indices: number[] = [];
   for (let r = 0; r < profile.length - 1; r++) for (let i = 0; i < segments; i++) {
     const corners: Triple[] = [];
     for (const [row, column] of [[r,i],[r,i+1],[r+1,i+1],[r+1,i]]) {
       const a = column / segments * Math.PI * 2;
       const radius = profile[row][1] * (irregular ? .76 + .24 * Math.sin(column * 2.7 + .8) : 1);
-      corners.push([Math.cos(a)*radius,Math.sin(a)*radius,profile[row][0]]);
+      corners.push([Math.cos(a)*radius,Math.sin(a)*radius*flatten,profile[row][0]]);
     }
     const a=corners[0],b=corners[1],c=corners[2],d=corners[3];
     let nx=(b[1]-a[1])*(c[2]-a[2])-(b[2]-a[2])*(c[1]-a[1]);
@@ -38,8 +41,26 @@ function radialGeometry(profile: readonly (readonly [number, number])[], segment
       length=Math.hypot(nx,ny,nz);
     }
     const start=positions.length/3;
-    for(let k=0;k<4;k++){positions.push(...corners[k]);normals.push(nx/length,ny/length,nz/length);uvs.push(k===1||k===2?1:0,k>=2?1:0);}
+    for(let k=0;k<4;k++){positions.push(...corners[k]);normals.push(nx/length,ny/length,nz/length);uvs.push(planar?corners[k][0]*.5+.5:k===1||k===2?1:0,planar?corners[k][1]*.5+.5:k>=2?1:0);}
     indices.push(start,start+1,start+2,start,start+2,start+3);
+  }
+  return new Geometry({positions,normals,uvs,indices});
+}
+
+/** Bevelled polygonal deck sections keep a blade-like side silhouette, including a blunt stern. */
+function bladeGeometry(rows: readonly (readonly [number,number,number])[]): Geometry {
+  const positions:number[]=[],normals:number[]=[],uvs:number[]=[],indices:number[]=[];
+  const ring=(z:number,w:number,h:number):Triple[]=>[[-w,h*.55,z],[-w*.65,h,z],[w*.65,h,z],[w,h*.55,z],[w,-h*.55,z],[w*.65,-h,z],[-w*.65,-h,z],[-w,-h*.55,z]];
+  for(let r=0;r<rows.length-1;r++){
+    const a=ring(...rows[r]),b=ring(...rows[r+1]);
+    for(let i=0;i<8;i++){
+      const corners=[a[(i+1)%8],a[i],b[i],b[(i+1)%8]],p=corners[0],q=corners[1],s=corners[2];
+      let nx=(q[1]-p[1])*(s[2]-p[2])-(q[2]-p[2])*(s[1]-p[1]),ny=(q[2]-p[2])*(s[0]-p[0])-(q[0]-p[0])*(s[2]-p[2]),nz=(q[0]-p[0])*(s[1]-p[1])-(q[1]-p[1])*(s[0]-p[0]);
+      const length=Math.hypot(nx,ny,nz)||1,start=positions.length/3;
+      nx/=length;ny/=length;nz/=length;
+      for(let k=0;k<4;k++){positions.push(...corners[k]);normals.push(nx,ny,nz);uvs.push((i+(k===1||k===2?1:0))/8,(r+(k>=2?1:0))/(rows.length-1));}
+      indices.push(start,start+1,start+2,start,start+2,start+3);
+    }
   }
   return new Geometry({positions,normals,uvs,indices});
 }
@@ -56,7 +77,10 @@ export async function createCombatModel(source: ShipModel, script: CombatScript 
   const root=new Group();
   const textures=source.textures,geometries:Geometry[]=[],nativeMaterials:NativeMaterial3D[]=[],lights:PointLight[]=[];
   const white=textures[4];
-  const ships: ShipModel[]=script.ships.map((definition)=>{
+  const [cruiser,frigate]=await Promise.all([createShipModel('cruiser',textures),createShipModel('frigate',textures)]);
+  geometries.push(...cruiser.geometries,...frigate.geometries);
+  const ships: ShipModel[]=script.ships.map((definition,index)=>{
+    const template=definition.scale>=.65?source:index%2?frigate:cruiser;
     const nodes=new Map<Object3D,Object3D>(),materials=new Map<PBRMaterial,PBRMaterial>();
     const clone=(node:Object3D):Object3D=>{
       let copy:Object3D;
@@ -75,15 +99,42 @@ export async function createCombatModel(source: ShipModel, script: CombatScript 
       for(const child of node.children)copy.add(clone(child));
       return copy;
     };
-    const hull=clone(source.root) as Group;root.add(hull);
-    return {root:hull,textures,geometries:source.geometries,engines:source.engines.map(mesh=>nodes.get(mesh) as Mesh),turrets:source.turrets.map(t=>({root:nodes.get(t.root) as Group,barrels:nodes.get(t.barrels) as Group,muzzles:t.muzzles}))};
+    const hull=clone(template.root) as Group;root.add(hull);
+    return {root:hull,textures,geometries:template.geometries,engines:template.engines.map(mesh=>nodes.get(mesh) as Mesh),turrets:template.turrets.map(t=>({root:nodes.get(t.root) as Group,barrels:nodes.get(t.barrels) as Group,muzzles:t.muzzles}))};
   });
-  const boltGeometry=radialGeometry([[0,0],[.1,.045],[.25,.035],[1.1,0]],8);
-  const flashGeometry=radialGeometry([[-.32,0],[-.09,.13],[0,.04],[.08,0]],9,true);
-  const rippleGeometry=radialGeometry([[-.32,.55],[-.24,.72],[-.13,.87],[0,1]],40);
+  const boltGeometry=radialGeometry([[0,0],[.035,.024],[.12,.02],[.5,0]],8);
+  const flashGeometry=radialGeometry([[-.19,0],[-.05,.065],[0,.022],[.025,0]],9,true);
+  const rippleGeometry=radialGeometry([[-.18,.12],[-.16,.4],[-.09,.72],[0,1]],48,false,1,true);
   const plateGeometry=radialGeometry([[-.06,0],[-.06,1],[.045,.82],[.045,0]],7,true);
   const gasGeometry=Geometry.sphere(1,24,16);
   geometries.push(boltGeometry,flashGeometry,rippleGeometry,plateGeometry,gasGeometry);
+  const escortGeometry=bladeGeometry([[-5.6,.025,.055],[-4.2,.32,.22],[-1.5,.7,.34],[2.9,.75,.38],[4.2,.68,.32],[4.21,.025,.055]]);
+  const deckGeometry=bladeGeometry([[-1.6,.12,.12],[-.9,.33,.42],[1.2,.37,.5],[2.1,.3,.34],[2.11,.03,.055]]);
+  const sectionGeometry=bladeGeometry([[-1.1,.72,.31],[-.95,.93,.36],[.85,1.03,.38],[1.05,.78,.33]]);
+  geometries.push(escortGeometry,deckGeometry,sectionGeometry);
+  const escorts=script.escorts??[],scratch=new Object3D();
+  const screens=[escortGeometry,deckGeometry].map((geometry,i)=>root.add(new InstancedMesh({
+    geometry,count:Math.max(1,escorts.length),material:new PBRMaterial({texture:textures[0],normalTexture:textures[1],color:i?[.25,.3,.31]:[.53,.57,.56],roughness:.85,metallic:.42,alphaMode:'OPAQUE'}),castShadow:false,receiveShadow:true,
+  })));
+  const outriggers=root.add(new InstancedMesh({geometry:escortGeometry,count:Math.max(1,escorts.length*2),material:new PBRMaterial({texture:textures[0],normalTexture:textures[1],color:[.25,.29,.3],roughness:.86,metallic:.5,alphaMode:'OPAQUE'}),castShadow:false}));
+  outriggers.visible=escorts.length>0;
+  const exhaustGeometry=radialGeometry([[0,.035],[.17,.075],[.95,0]],8);
+  geometries.push(exhaustGeometry);
+  const exhaust=root.add(new InstancedMesh({geometry:exhaustGeometry,count:Math.max(1,escorts.length*3),material:new PBRMaterial({texture:white,color:[.3,.48,.58],emissive:[.28,.6,.85],roughness:1,metallic:0,alphaMode:'OPAQUE'}),castShadow:false,receiveShadow:false}));
+  exhaust.visible=escorts.length>0;
+  for(const screen of screens)screen.visible=escorts.length>0;
+  for(let i=0;i<escorts.length;i++)for(const screen of screens){
+    const attacker=escorts[i].side==='attacker';screen.setColorAt(i,attacker?1:.83,attacker?.78:1,attacker?.6:1);
+  }
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=Math.min(256,CONTRACT.visual.textureSize);
+  const ctx=canvas.getContext('2d')!,image=ctx.createImageData(canvas.width,canvas.height);
+  for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++){
+    const dx=(x+.5)/canvas.width*2-1,dy=(y+.5)/canvas.height*2-1,r=Math.hypot(dx,dy),a=Math.atan2(dy,dx);
+    const edge=.77+.1*Math.sin(a*7)+.06*Math.sin(a*13),alpha=Math.max(0,Math.min(1,(edge-r)*5));
+    const soot=13+Math.sin(x*1.2+y*.83)*4,k=(y*canvas.width+x)*4;
+    image.data[k]=soot;image.data[k+1]=soot*.83;image.data[k+2]=soot*.72;image.data[k+3]=alpha*220;
+  }
+  ctx.putImageData(image,0,0);const scorchTexture=await Texture.fromImage(canvas);
   const projectileMaterials=([ [.28,.75,1],[1,.36,.12] ] as Triple[]).map(color=>new PBRMaterial({texture:white,color,emissive:[color[0]*2,color[1]*2,color[2]*2],roughness:1,metallic:0,alphaMode:'OPAQUE'}));
   // Uniform alpha is explicit: TextureMaterial opacity is readonly in this engine.
   const fadingMaterial=(color:Triple,label:string,kind:number):NativeMaterial3D=>{
@@ -106,7 +157,14 @@ fn xyzSurface(world:vec3f,normal:vec3f,uv:vec2f,texel:vec4f)->vec4f{
     let edge=pow(abs(dot(normalize(normal),normalize(scene.camera.xyz-world))),0.8);
     a*=edge*smoothstep(0.16,0.76,field);
     if(mesh.custom[0].z<1.5){color=mix(vec3f(1.0,0.13,0.018),vec3f(4.0,1.55,0.32),field);}
-  }else{color*=2.5;}
+  }else{
+    let p=uv*18.0;let cell=abs(fract(vec2f(p.x*0.866,p.y+floor(p.x*0.866)*0.5))-vec2f(0.5));
+    let hex=max(cell.y,cell.x*0.866+cell.y*0.5);
+    let grid=smoothstep(0.38,0.43,hex)*(1.0-smoothstep(0.46,0.5,hex));
+    let radius=length(uv-vec2f(0.5))*2.0;
+    a*=(0.16+grid*0.84)*(1.0-smoothstep(0.72,1.0,radius));
+    color*=1.6;
+  }
   return vec4f(color*a,a);
 }`,
       glsl:`float combatHash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}
@@ -131,7 +189,14 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
     float edge=pow(abs(dot(normalize(normal),normalize(cameraPosition-world))),0.8);
     a*=edge*smoothstep(0.16,0.76,field);
     if(xyzUniforms[0].z<1.5)color=mix(vec3(1.0,0.13,0.018),vec3(4.0,1.55,0.32),field);
-  }else{color*=2.5;}
+  }else{
+    vec2 p=uv*18.0,cell=abs(fract(vec2(p.x*0.866,p.y+floor(p.x*0.866)*0.5))-vec2(0.5));
+    float hex=max(cell.y,cell.x*0.866+cell.y*0.5);
+    float grid=smoothstep(0.38,0.43,hex)*(1.0-smoothstep(0.46,0.5,hex));
+    float radius=length(uv-vec2(0.5))*2.0;
+    a*=(0.16+grid*0.84)*(1.0-smoothstep(0.72,1.0,radius));
+    color*=1.6;
+  }
   #endif
   return vec4(color*a,a);
 }
@@ -143,6 +208,7 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
     const projectile=root.add(new Mesh({geometry:boltGeometry,material:projectileMaterials[faction],castShadow:false,receiveShadow:false}));
     const flash=root.add(new Mesh({geometry:flashGeometry,material:projectileMaterials[faction],castShadow:false,receiveShadow:false}));
     const direction:Triple=[shot.end[0]-shot.start[0],shot.end[1]-shot.start[1],shot.end[2]-shot.start[2]];
+    const defence=root.add(new Mesh({geometry:boltGeometry,material:projectileMaterials[1-faction],castShadow:false,receiveShadow:false}));
     aim(projectile,...direction);aim(flash,...direction);
     const hitPose={x:0,y:0,z:0,yaw:0,scale:1,destroyed:false};
     sampleCombatShip(shot.target,shot.hitTime,hitPose,script);
@@ -152,13 +218,17 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
     const localNormal:Triple=[...shot.normal];
     const normal:Triple=[c*localNormal[0]+s*localNormal[2],localNormal[1],-s*localNormal[0]+c*localNormal[2]];
     const contact=root.add(new Group());
-    const rippleMaterial=fadingMaterial(faction===1?[.3,.7,1]:[.6,.5,1],`Shield ripple ${shot.id}`,0);
+    const rippleMaterial=fadingMaterial([.3,.65,.78],`Shield ripple ${shot.id}`,0);
     const ripple=contact.add(new Mesh({geometry:rippleGeometry,material:rippleMaterial,castShadow:false,receiveShadow:false}));aim(ripple,...localNormal);
-    const scorch=contact.add(new Mesh({geometry:plateGeometry,material:new PBRMaterial({texture:white,color:[.035,.025,.021],roughness:1,metallic:.2,alphaMode:'OPAQUE'}),castShadow:false}));aim(scorch,...localNormal);scorch.scale.set(.42,.3,.12);
+    const receiver=[...ships[shot.target].root.children].find(node=>node instanceof Mesh&&node.material instanceof PBRMaterial&&node.material.color[0]>.5&&node.material.roughness>.7) as Mesh;
+    const projector=new Object3D();aim(projector,-localNormal[0],-localNormal[1],-localNormal[2]);
+    // Shield contacts are outside the receiver; projecting them onto armour is invalid.
+    const scorch=shot.result==='shield'?new Group():new Decal({target:receiver,material:new PBRMaterial({texture:scorchTexture,color:[1,1,1],roughness:1,metallic:.05,alphaMode:'BLEND',transparent:true}),position:[...local],rotation:projector.rotation,size:[.82,.65,.5],normalOffset:.003,cullBackfaces:false,visible:false});
+    if(scorch instanceof Decal)geometries.push(scorch.geometry);
     const heat=new PBRMaterial({texture:white,color:[.18,.055,.018],emissive:[1,.22,.035],roughness:.8,metallic:.35,alphaMode:'OPAQUE'});
     const breach=contact.add(new Mesh({geometry:plateGeometry,material:heat,castShadow:false}));aim(breach,...localNormal);breach.scale.set(.2,.12,.2);breach.position.set(localNormal[0]*.023,localNormal[1]*.023,localNormal[2]*.023);
     const flameMaterial=fadingMaterial([1,.43,.08],`Fuel vent ${shot.id}`,1),gasMaterial=fadingMaterial([.2,.16,.12],`Expelled gas ${shot.id}`,2);
-    const flames=Array.from({length:shot.result==='kill'?12:5},(_,i)=>{
+    const flames=Array.from({length:shot.result==='kill'?7:3},(_,i)=>{
       const mesh=contact.add(new Mesh({geometry:gasGeometry,material:flameMaterial,castShadow:false,receiveShadow:false}));
       if(shot.result==='kill'){
         const angle=i*2.399963,elevation=Math.sin(i*1.7+.4),radius=Math.sqrt(1-elevation*elevation);
@@ -166,31 +236,55 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
       }else aim(mesh,...localNormal);
       return mesh;
     });
-    const gas=Array.from({length:shot.result==='kill'?9:4},()=>root.add(new Mesh({geometry:gasGeometry,material:gasMaterial,castShadow:false,receiveShadow:false})));
-    const fragments=Array.from({length:shot.result==='kill'?32:8},(_,i)=>{
+    const gas=Array.from({length:shot.result==='kill'?5:2},()=>root.add(new Mesh({geometry:gasGeometry,material:gasMaterial,castShadow:false,receiveShadow:false})));
+    const fragments=Array.from({length:shot.result==='kill'?24:6},(_,i)=>{
       const a=i*2.399963+index*.7,y=Math.sin(i*1.8+index),r=Math.sqrt(1-y*y);
       const velocity:Triple=[normal[0]*(.5+i%4*.23)+Math.cos(a)*r*(.6+i%5*.28),normal[1]*(.5+i%4*.23)+y*(.6+i%5*.28),normal[2]*(.5+i%4*.23)+Math.sin(a)*r*(.6+i%5*.28)];
       const material=new PBRMaterial({texture:textures[0],color:[.39,.38,.34],normalTexture:textures[1],roughness:.68,metallic:.8,emissive:[.5,.16,.025],alphaMode:'OPAQUE'});
-      const mesh=root.add(new Mesh({geometry:plateGeometry,material}));
-      const armorFragment=shot.result==='kill'&&i<12;
-      const lx=Math.cos(a)*1.2,lz=-3.8+(i%12)*.68;
-      const origin:Triple=armorFragment?[hitPose.x+(c*lx+s*lz)*hitPose.scale,hitPose.y+y*.4*hitPose.scale,hitPose.z+(-s*lx+c*lz)*hitPose.scale]:[...shot.end];
-      return {mesh,material,velocity,origin,size:armorFragment?.16+(i%4)*.075:.012+(i%4)*.009,phase:a};
+      const section=shot.result==='kill'&&i<5,armorFragment=shot.result==='kill'&&i<13;
+      const mesh=root.add(new Mesh({geometry:section?sectionGeometry:plateGeometry,material}));
+      const lx=section?0:Math.cos(a)*1.2,lz=section?-4.3+i*1.9:-3.8+(i%12)*.68;
+      const origin:Triple=armorFragment?[hitPose.x+(c*lx+s*lz)*hitPose.scale,hitPose.y+(section?0:y*.4)*hitPose.scale,hitPose.z+(-s*lx+c*lz)*hitPose.scale]:[...shot.end];
+      const interior=section?mesh.add(new Mesh({geometry:plateGeometry,material:new PBRMaterial({texture:textures[0],color:[.075,.09,.1],roughness:.95,metallic:.65,emissive:[.11,.018,.002],alphaMode:'OPAQUE'})})):undefined;
+      if(interior){interior.position.z=-1.115;interior.scale.set(.74,.27,.13);}
+      return {mesh,material,velocity,origin,section,size:section?hitPose.scale:armorFragment?.16+(i%4)*.075:.012+(i%4)*.009,phase:a,yaw:hitPose.yaw};
     });
     const light=new PointLight({intensity:0,color:shot.result==='shield'?[.28,.6,1]:[1,.36,.08],range:3,priority:2});lights.push(light);
-    return {shot,projectile,flash,contact,ripple,rippleMaterial,scorch,breach,heat,flames,flameMaterial,gas,gasMaterial,fragments,light,normal,local,phase:-2};
+    return {shot,projectile,flash,defence,contact,ripple,rippleMaterial,scorch,breach,heat,flames,flameMaterial,gas,gasMaterial,fragments,light,normal,local,phase:-2};
   });
   const shipPose={x:0,y:0,z:0,yaw:0,scale:1,destroyed:false},gunPose={yaw:0,pitch:0,recoil:0},projectilePose={x:0,y:0,z:0,visible:false};
   const hideEffect=(effect:typeof effects[number]):void=>{
-    effect.projectile.visible=effect.flash.visible=effect.contact.visible=false;
+    effect.projectile.visible=effect.flash.visible=effect.defence.visible=effect.contact.visible=effect.scorch.visible=false;
     for(const gas of effect.gas)gas.visible=false;
     for(const fragment of effect.fragments)fragment.mesh.visible=false;
     effect.light.intensity=0;
   };
   const update=(time:number,shock=0):void=>{
+    for(let i=0;i<escorts.length;i++){
+      const escort=escorts[i],arrival=script.approach&&time<0?1-Math.max(0,Math.min(1,(time+script.approach.duration)/script.approach.duration))**2:0;
+      scratch.position.set(escort.origin[0]+escort.velocity[0]*time+(escort.side==='attacker'?44:-44)*arrival,escort.origin[1],escort.origin[2]+escort.velocity[2]*time);
+      const width=i%6===0?1.2:i%3===0?.78:1,length=i%6===0?1.25:i%3===0?1.4:1;
+      scratch.rotation.setFromEuler(0,escort.yaw,0);scratch.scale.set(escort.scale*width,escort.scale,escort.scale*length);
+      screens[0].setMatrixAt(i,scratch.updateWorldMatrix());
+      scratch.position.y+=escort.scale*.64;screens[1].setMatrixAt(i,scratch.updateWorldMatrix());
+      scratch.position.y-=escort.scale*.77;scratch.scale.set(escort.scale*.29,escort.scale*.6,escort.scale*.64*length);
+      for(let side=0;side<2;side++){
+        const offset=(side?1:-1)*escort.scale*.9;
+        scratch.position.x+=Math.cos(escort.yaw)*offset;scratch.position.z-=Math.sin(escort.yaw)*offset;
+        outriggers.setMatrixAt(i*2+side,scratch.updateWorldMatrix());
+        scratch.position.x-=Math.cos(escort.yaw)*offset;scratch.position.z+=Math.sin(escort.yaw)*offset;
+      }
+      for(let nozzle=0;nozzle<3;nozzle++){
+        const offset=(nozzle-1)*escort.scale*.4;
+        scratch.position.set(escort.origin[0]+escort.velocity[0]*time+(escort.side==='attacker'?44:-44)*arrival+Math.sin(escort.yaw)*4.23*escort.scale*length+Math.cos(escort.yaw)*offset,escort.origin[1]-.05*escort.scale,escort.origin[2]+escort.velocity[2]*time+Math.cos(escort.yaw)*4.23*escort.scale*length-Math.sin(escort.yaw)*offset);
+        scratch.scale.set(escort.scale,escort.scale,escort.scale*(1.4+.15*Math.sin(time*7+i)));
+        exhaust.setMatrixAt(i*3+nozzle,scratch.updateWorldMatrix());
+      }
+    }
     for(let i=0;i<ships.length;i++){
       sampleCombatShip(i,time,shipPose,script,shock);const ship=ships[i];
-      ship.root.position.set(shipPose.x,shipPose.y,shipPose.z);ship.root.rotation.setFromEuler(0,shipPose.yaw,0);ship.root.scale.set(shipPose.scale,shipPose.scale,shipPose.scale);ship.root.visible=!shipPose.destroyed;
+      const death=script.kills.get(i);
+      ship.root.position.set(shipPose.x,shipPose.y,shipPose.z);ship.root.rotation.setFromEuler(0,shipPose.yaw,0);ship.root.scale.set(shipPose.scale,shipPose.scale,shipPose.scale);ship.root.visible=!shipPose.destroyed||(death!==undefined&&time-death<.12);
       for(let j=0;j<ship.turrets.length;j++){sampleCombatGun(i,j,time,gunPose,script.shots);const turret=ship.turrets[j];turret.root.rotation.setFromEuler(0,gunPose.yaw,0);turret.barrels.rotation.setFromEuler(gunPose.pitch,0,0);turret.barrels.position.z=gunPose.recoil;}
     }
     for(const effect of effects){
@@ -203,7 +297,17 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
       sampleCombatProjectile(shot,time,projectilePose);effect.projectile.visible=projectilePose.visible;effect.projectile.position.set(projectilePose.x,projectilePose.y,projectilePose.z);
       // The streak trails its physical leading point, clipped during initial launch.
       const trail=Math.min(1,Math.max(0,launchAge)*18);effect.projectile.scale.set(1,1,trail);
-      effect.flash.visible=launchAge>=0&&launchAge<.085;effect.flash.position.set(shot.start[0],shot.start[1],shot.start[2]);const flashScale=Math.max(0,1-launchAge/.085);effect.flash.scale.set(flashScale,flashScale,flashScale);
+      effect.flash.visible=launchAge>=0&&launchAge<.045;effect.flash.position.set(shot.start[0],shot.start[1],shot.start[2]);const flashScale=Math.max(0,1-launchAge/.045)*script.ships[shot.source].scale;effect.flash.scale.set(flashScale,flashScale,flashScale);
+      // A screening burst tries to intercept the incoming round; no instantaneous beam.
+      const interceptAge=time-(shot.hitTime-.48),burst=interceptAge% .16;
+      effect.defence.visible=interceptAge>=0&&interceptAge<.48&&burst<.075&&projectilePose.visible;
+      if(effect.defence.visible){
+        const target=ships[shot.target].root,p=target.position,scale=script.ships[shot.target].scale;
+        const dx=projectilePose.x-p.x,dy=projectilePose.y-p.y-scale*.7,dz=projectilePose.z-p.z,length=Math.hypot(dx,dy,dz)||1;
+        const travel=Math.min(length,burst*40);
+        effect.defence.position.set(p.x+dx/length*travel,p.y+scale*.7+dy/length*travel,p.z+dz/length*travel);
+        aim(effect.defence,dx,dy,dz);effect.defence.scale.set(.65,.65,.4);
+      }
       const shield=shot.result==='shield',kill=shot.result==='kill',hit=age>=0;
       sampleCombatShip(shot.target,time,shipPose,script,shock);const c=Math.cos(shipPose.yaw),s=Math.sin(shipPose.yaw);
       const px=shipPose.x+(c*effect.local[0]+s*effect.local[2])*shipPose.scale;
@@ -211,10 +315,12 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
       const pz=shipPose.z+(-s*effect.local[0]+c*effect.local[2])*shipPose.scale;
       effect.contact.position.set(px+effect.normal[0]*.012,py+effect.normal[1]*.012,pz+effect.normal[2]*.012);
       effect.contact.rotation.setFromEuler(0,shipPose.yaw,0);effect.contact.scale.set(shipPose.scale,shipPose.scale,shipPose.scale);
-      effect.contact.visible=hit&&(kill||!shipPose.destroyed);effect.ripple.visible=shield&&age<.7;effect.rippleMaterial.uniforms[0]=shield&&hit?Math.max(0,1-age/.7)*.7:0;
-      const rippleScale=.45+Math.max(0,age)*2;effect.ripple.scale.set(rippleScale,rippleScale,rippleScale);
-      effect.scorch.visible=!shield&&!kill&&hit;effect.breach.visible=!shield&&!kill&&hit;
-      const burn=hit&&!shield&&(kill||!shipPose.destroyed)?Math.max(0,1-age/(kill?.75:3.1)):0;
+      effect.contact.visible=hit&&(kill||!shipPose.destroyed);effect.ripple.visible=shield&&age<.24;effect.rippleMaterial.uniforms[0]=shield&&hit?Math.pow(Math.max(0,1-age/.24),2)*.55:0;
+      const rippleScale=.18+Math.max(0,age)*1.4;effect.ripple.scale.set(rippleScale,rippleScale,rippleScale);
+      const superseded=script.shots.some(other=>other.target===shot.target&&other.result!=='shield'&&other.hitTime>shot.hitTime&&other.hitTime<=time);
+      effect.scorch.visible=!shield&&!kill&&hit&&!shipPose.destroyed&&!superseded;effect.breach.visible=!shield&&!kill&&hit&&age<3.1&&!superseded;
+      const secondary=kill&&age>.3&&age<1.25?.22*Math.exp(-Math.max(0,age-.3)*3)*Math.pow(Math.sin((age-.3)*15),2):0;
+      const burn=hit&&!shield&&(kill||!shipPose.destroyed)?Math.max(0,1-age/(kill?.75:3.1))+secondary:0;
       const flicker=.7+.19*Math.sin(age*31+shot.source)+.11*Math.sin(age*53);
       effect.heat.emissive[0]=burn*1.7*flicker;effect.heat.emissive[1]=burn*.38*flicker;effect.heat.emissive[2]=burn*.045;
       effect.flameMaterial.uniforms[0]=burn*.58*flicker;
@@ -226,11 +332,12 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
         const distance=kill?.18+Math.max(0,age)*(.8+i*.16):.08+i*.12+(.5+.5*Math.sin(phase))*.16;
         // Convert the vent normal to local coordinates through the already-authored patch aim.
         flame.position.copy(effect.breach.position);flame.position.x+=Math.sin(phase)*.045;flame.position.y+=Math.cos(phase*1.3)*.045;
+        if(kill&&i>=5)flame.position.z+=(i===5?2.3:4.8);
         const q=flame.rotation,x=-2*(q.x*q.z+q.w*q.y),y=-2*(q.y*q.z-q.w*q.x),z=-(1-2*(q.x*q.x+q.y*q.y));
         flame.position.x+=x*distance;flame.position.y+=y*distance;flame.position.z+=z*distance;
-        const expansion=kill?.3+Math.max(0,age)*3.2:burn;
-        flame.scale.set((kill?1.2:.38)*pulse*expansion,(kill?.95:.29)*pulse*expansion,
-          (kill?1.25:1.4)*(1+i*(kill?.025:.15))*expansion);
+        const expansion=kill?.2+Math.max(0,age)*2.1:burn;
+        flame.scale.set((kill?.85:.24)*pulse*expansion,(kill?.7:.21)*pulse*expansion,
+          (kill?.95:.9)*(1+i*(kill?.025:.1))*expansion);
         // The vent ellipsoid starts outside the breach rather than straddling the hull.
         if(!kill){flame.position.x+=x*flame.scale.z;flame.position.y+=y*flame.scale.z;flame.position.z+=z*flame.scale.z;}
       }
@@ -245,9 +352,9 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
         const fragment=effect.fragments[i],life=kill?12:1.1;
         fragment.mesh.visible=hit&&!shield&&age<life;
         fragment.mesh.position.set(fragment.origin[0]+fragment.velocity[0]*age,fragment.origin[1]+fragment.velocity[1]*age,fragment.origin[2]+fragment.velocity[2]*age);
-        fragment.mesh.rotation.setFromEuler(fragment.phase+age*(.5+i%3),age*(.8+i%4),fragment.phase*.7+age*.9);
-        const scale=fragment.size*(kill?1:Math.max(0,1-age/life));fragment.mesh.scale.set(scale,scale*.6,scale*.4);
-        const glow=Math.max(0,1-age/(kill?1.8:.6));fragment.material.emissive[0]=glow*.9;fragment.material.emissive[1]=glow*.24;fragment.material.emissive[2]=glow*.025;
+        fragment.mesh.rotation.setFromEuler(fragment.section?age*(.22+i*.07):fragment.phase+age*(.5+i%3),fragment.section?fragment.yaw+age*(.18+i*.08):age*(.8+i%4),fragment.section?age*.3:fragment.phase*.7+age*.9);
+        const scale=fragment.size*(kill?1:Math.max(0,1-age/life));fragment.mesh.scale.set(scale,fragment.section?scale:scale*.6,fragment.section?scale:scale*.4);
+        const glow=Math.max(0,1-age/(kill?1.8:.6)),heat=fragment.section?.11:.65;fragment.material.emissive[0]=glow*heat;fragment.material.emissive[1]=glow*heat*.19;fragment.material.emissive[2]=glow*heat*.018;
       }
       effect.light.position.set(px+effect.normal[0]*.12,py+effect.normal[1]*.12,pz+effect.normal[2]*.12);
       effect.light.intensity=burn*(kill?1.6:.48)*flicker;
@@ -256,8 +363,8 @@ vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
   };
   const reset=():void=>{update(0);for(const light of lights)light.intensity=0;};
   reset();
-  // Only the five effect geometries and native materials are new; all hull resources are borrowed.
-  return {root,textures:[],geometries,nativeMaterials,lights,update,reset,dispose(){
+  // Class-specific hulls and projected decals are owned here; hero maps are borrowed.
+  return {root,textures:[scorchTexture],geometries,nativeMaterials,lights,update,reset,dispose(){
     for(const light of lights)light.intensity=0;
     for(const child of root.children)root.remove(child);
   }};

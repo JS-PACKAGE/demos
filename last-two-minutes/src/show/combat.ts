@@ -1,4 +1,5 @@
-import { CONTRACT, seededRandom, type Vec3 } from './contract.ts';
+import { CONTRACT, seededRandom } from './contract.ts';
+import type { Vec3 } from './contract.ts';
 import { BARREL_HEIGHT, BARREL_OFFSETS, MUZZLE_Z, SHIP_TURRET_MOUNTS } from '../scene/ship-hardpoints.ts';
 
 export interface CombatShip {
@@ -43,6 +44,8 @@ export interface CombatScript {
   /** Destroyed ship index to the script time of the fatal impact. */
   readonly kills: ReadonlyMap<number, number>;
   readonly duration: number;
+  /** Distant screening hulls use a fixed low-detail instanced representation, not full gun crews. */
+  readonly escorts?: readonly CombatShip[];
   /** Ships glide in from `offsets` over the `duration` seconds before script time 0. */
   readonly approach?: { readonly duration: number; readonly offsets: readonly Vec3[] };
 }
@@ -70,6 +73,7 @@ export interface CombatScriptConfig {
   readonly approach?: CombatScript['approach'];
   /** Longest projectile flight the solver may resolve, in seconds. */
   readonly maxFlight?: number;
+  readonly escorts?: readonly CombatShip[];
 }
 
 export const COMBAT_DURATION = 12;
@@ -282,7 +286,7 @@ export function createCombatScript(config: CombatScriptConfig): CombatScript {
     if (!lethal || lethal.hitTime !== kills.get(spec.target)) throw new Error(`Authored kill of ship ${spec.target} is not reproducible`);
   }
   return Object.freeze({ ships: config.ships, shots: Object.freeze(shots.sort((a, b) => a.fireTime - b.fireTime)),
-    kills, duration: config.duration, approach: config.approach });
+    kills, duration: config.duration, approach: config.approach, escorts: config.escorts });
 }
 
 export const COMBAT_SHIPS: readonly CombatShip[] = Object.freeze(([

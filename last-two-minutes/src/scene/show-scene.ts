@@ -9,11 +9,13 @@ import { createShipModel, type ShipModel } from './ship-model.ts';
 import { createCombatModel, type CombatModel } from './combat-model.ts';
 import { createWeaponModel, type WeaponModel } from './weapon-model.ts';
 import { createCataclysm, type Cataclysm } from './cataclysm.ts';
-import { terrain } from './planet-noise.ts';
+import { groundHeight } from './ground.ts';
+import { createSurfaceSky } from './sky.ts';
+import type { SurfaceSky } from './sky.ts';
 
 const PLANET_ROTATION = [-.06, .18, 0] as const;
 const HERO = { from: 1, to: 17.5, startAngle: -55 * Math.PI / 180, angularSpeed: 9 * Math.PI / 180, radius: 12.8, scale: .36 };
-const EYE_HEIGHT = .5;
+const EYE_HEIGHT = .003;
 const normalize = (v: Vec3): Vec3 => { const n = Math.hypot(...v) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
 
 export class ShowScene extends Scene {
@@ -27,18 +29,20 @@ export class ShowScene extends Scene {
   private readonly nativeMaterials: NativeMaterial3D[] = [];
   private readonly streams: GPUParticleEmitter3D[] = [];
   private readonly battles: { model: CombatModel; shown: boolean }[] = [];
+  private readonly fleetShadowCasters: Mesh[] = [];
+  private fleetShadows = true;
   private readonly focusTimes = EVENTS.filter(event => event.kind === 'fire').map(event => event.t);
   private readonly impactPoint: Vec3;
   private readonly woundPoint: Vec3;
   private readonly weaponDirection: Vec3;
   private readonly weaponDistance: number;
   private readonly environmentMap: EnvironmentMap;
-  private groundRadius = CONTRACT.planet.radius + EYE_HEIGHT;
   private renderer?: Renderer;
   private planet?: PlanetModel;
   private ship?: ShipModel;
   private weapon?: WeaponModel;
   private cataclysm?: Cataclysm;
+  private sky?: SurfaceSky;
   private appliedCrack = -1;
   private rebuilding = Promise.resolve();
   private released = false;
@@ -81,17 +85,13 @@ export class ShowScene extends Scene {
   }
 
   /** Radius at which the ground camera clears the actual displaced terrain beneath it. */
-  private measureGround(): number {
-    const q = this.planetGroup.rotation, start = CONTRACT.cameraTrack.find(shot => shot.subject === 'surface')!;
-    const [x, y, z] = normalize(start.frames[0]!.position);
+  private measureGround(position: Vec3): number {
+    const q = this.planetGroup.rotation;
+    const [x, y, z] = normalize(position);
     // Inverse rotation of the world-space ground direction into the planet's local frame.
     const tx = -2 * (q.y * z - q.z * y), ty = -2 * (q.z * x - q.x * z), tz = -2 * (q.x * y - q.y * x);
     const lx = x + q.w * tx - q.y * tz + q.z * ty, ly = y + q.w * ty - q.z * tx + q.x * tz, lz = z + q.w * tz - q.x * ty + q.y * tx;
-    let height = 0;
-    for (let a = -3; a <= 3; a++) for (let b = -3; b <= 3; b++) {
-      const [px, py, pz] = normalize([lx + a * .05, ly + b * .05, lz + (a - b) * .02]);
-      height = Math.max(height, terrain(px, py, pz).height);
-    }
+    const height = groundHeight(lx, ly, lz);
     return CONTRACT.planet.radius + height + EYE_HEIGHT;
   }
 
@@ -116,6 +116,12 @@ export class ShowScene extends Scene {
       for (const light of model.lights) this.pointLights.push(light);
       this.geometries.push(...model.geometries); this.nativeMaterials.push(...model.nativeMaterials);
       this.battles.push({ model, shown: true });
+      const pending = [...model.root.children];
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (node instanceof Mesh && node.castShadow) this.fleetShadowCasters.push(node);
+        pending.push(...node.children);
+      }
     }
     const weapon = await createWeaponModel(ship);
     this.weapon = weapon; this.add(weapon.root);
@@ -128,6 +134,8 @@ export class ShowScene extends Scene {
       weapon.root.rotation.set(-dy, dx, 0, 1 + dz).normalize();
     }
     const white = ship.textures[4]!;
+    const sky = createSurfaceSky(white); this.sky = sky; this.add(sky.mesh);
+    this.geometries.push(sky.geometry); this.nativeMaterials.push(sky.material);
     const cataclysm = await createCataclysm(game.graphics, white, CONTRACT.scene.peakTime - CONTRACT.scene.breakupTime);
     this.cataclysm = cataclysm; this.add(cataclysm.root); this.pointLights.push(cataclysm.light);
     this.textures.push(...cataclysm.textures); this.geometries.push(...cataclysm.geometries); this.nativeMaterials.push(...cataclysm.nativeMaterials);
@@ -138,7 +146,6 @@ export class ShowScene extends Scene {
       const y = random() * 2 - 1, angle = random() * Math.PI * 2, r = Math.sqrt(1 - y * y), size = .018 + random() * .025;
       stars.setMatrixAt(i, pose(Math.cos(angle) * r * 180, y * 180, Math.sin(angle) * r * 180, size, size, size));
     }
-    this.groundRadius = this.measureGround();
     if (signal.aborted || this.released) { this.releaseResources(); throw new DOMException('Aborted', 'AbortError'); }
     await Promise.all([game.graphics.prepareTextures(this.textures), ...this.geometries.map(geometry => game.graphics.prepareGeometry(geometry)),
       ...this.nativeMaterials.map(material => game.graphics.prepareMaterial(material))]);
@@ -159,9 +166,9 @@ export class ShowScene extends Scene {
       const warm = nozzle === 1;
       const stream = new GPUParticleEmitter3D({ capacity: CONTRACT.visual.engineParticles.capacity, rate: CONTRACT.visual.engineParticles.rate,
         lifetime: CONTRACT.visual.engineParticles.lifetime, seed: CONTRACT.seed + nozzle * 101, space: 'local',
-        velocityMin: [-.25, -.25, 4.8], velocityMax: [.25, .25, 7.6], gravity: [0, 0, 0],
-        startColor: warm ? [1, .62, .24, .42] : [.32, .68, 1, .38], endColor: warm ? [.65, .18, .04, 0] : [.04, .2, .5, 0],
-        startSize: .16, endSize: .025 });
+        velocityMin: [-.025, -.025, 4.8], velocityMax: [.025, .025, 7.6], gravity: [0, 0, 0],
+        startColor: warm ? [1, .62, .24, .12] : [.32, .68, 1, .1], endColor: warm ? [.65, .18, .04, 0] : [.04, .2, .5, 0],
+        startSize: .035, endSize: .006 });
       stream.position.set((nozzle - 1) * .81, -.02, 4.95);
       try { await renderer.prepareGpuParticles(stream); } catch (error) { stream.destroy(); throw error; }
       if (this.released) { stream.destroy(); return; }
@@ -178,9 +185,10 @@ export class ShowScene extends Scene {
   private applyCamera(sample: ShowSample): void {
     let [x, y, z] = sample.camera.position;
     const { surfaceStart, surfaceEnd } = CONTRACT.scene;
+    this.lens.near = sample.t >= surfaceStart && sample.t < surfaceEnd ? .0003 : CONTRACT.camera.near;
     if (sample.t >= surfaceStart && sample.t < surfaceEnd) {
       // The ground camera rides the true terrain surface, not a flat sphere.
-      const scale = this.groundRadius / (Math.hypot(x, y, z) || 1); x *= scale; y *= scale; z *= scale;
+      const scale = this.measureGround(sample.camera.position) / (Math.hypot(x, y, z) || 1); x *= scale; y *= scale; z *= scale;
     }
     this.lens.position.set(x, y, z); this.aim.set(...sample.camera.target);
     this.lens.fov = sample.camera.fov * Math.PI / 180; this.lens.lookAt(this.aim);
@@ -191,11 +199,21 @@ export class ShowScene extends Scene {
     const planet = this.planet, ship = this.ship, weapon = this.weapon, cataclysm = this.cataclysm;
     if (!planet || !ship || !weapon || !cataclysm) return;
     const t = sample.t, scene = CONTRACT.scene, releaseAge = t - scene.breakupTime;
+    // Distant orbital hulls have no readable projected shadow in the planet-close shot.
+    const fleetShadows = t < scene.impactTime;
+    if (fleetShadows !== this.fleetShadows) {
+      for (const mesh of this.fleetShadowCasters) mesh.castShadow = fleetShadows;
+      this.fleetShadows = fleetShadows;
+    }
+    const air = this.sky?.update(this.lens.position, t < scene.breakupTime) ?? 0;
+    this.fog.enabled = air > 0; this.fog.mode = 'exp2'; this.fog.density = air * .003; this.fog.color = [.43, .55, .66];
+    this.environmentIntensity = .45 + air * .2;
     this.postProcessing.exposure = .72 + Math.min(sample.brightness, 2.5) * .14;
     // Planet: wounded crust until release, then the authored breakup.
     if (releaseAge < 0) {
       if (sample.crack !== this.appliedCrack) { planet.setDamage(sample.crack); this.appliedCrack = sample.crack; }
     } else planet.setBreakup(releaseAge);
+    planet.setSurfaceView(air > .5);
     const wound = t >= scene.impactTime && t < scene.breakupTime;
     this.woundLight.position.set(...this.woundPoint);
     this.woundLight.intensity = wound ? 4.5 * Math.min(1, (t - scene.impactTime) / 3) + 14 * Math.exp(-(t - scene.impactTime) / .35) : 0;

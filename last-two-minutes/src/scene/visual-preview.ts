@@ -153,7 +153,7 @@ class RepresentativeScene extends Scene {
     const t=this.time;
     this.ship.root.visible = this.view === 'flyby';
     this.models.rotation.setFromEuler(-.06,.18,0);
-    this.cataclysm.update(-1); this.coreLight.intensity=0;
+    this.cataclysm.update(-16); this.coreLight.intensity=0;
     if (this.combat) {
       const active = this.view === 'combat';
       this.combat.root.visible = active;
@@ -170,6 +170,7 @@ class RepresentativeScene extends Scene {
       const x=d[0]*r,y=d[1]*r,z=d[2]*r,tx=2*(q.y*z-q.z*y),ty=2*(q.z*x-q.x*z),tz=2*(q.x*y-q.y*x);
       this.coreLight.position.set(x+q.w*tx+q.y*tz-q.z*ty,y+q.w*ty+q.z*tx-q.x*tz,z+q.w*tz+q.x*ty-q.y*tx);
       this.coreLight.intensity=4.5*Math.min(1,t/3);
+      this.cataclysm.update(Math.min(0,t-15));
     } else if (this.view === 'aftermath') {
       this.planet.setDamage(1);
       if (t >= CONTRACT.visual.breakupLead) {

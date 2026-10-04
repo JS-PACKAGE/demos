@@ -12,6 +12,7 @@ export interface ShipModel {
 }
 
 type Point = [number, number, number];
+export type ShipHullClass = 'capital' | 'cruiser' | 'frigate';
 type Section = [number, number, number]; // z, half-width, half-height
 
 type Color = [number, number, number];
@@ -43,8 +44,8 @@ class HullBuilder {
     ordered.forEach((p,i) => {
       this.positions.push(...p); this.normals.push(...n);
       this.colors.push(...this.tint);
-      // World-projected UVs keep panel size consistent across differently sized armor plates.
-      const coords = tex?.[i] ?? (Math.abs(n[1]) >= Math.max(Math.abs(n[0]),Math.abs(n[2])) ? [p[0]/4+.5,p[2]/4+.5] : Math.abs(n[0]) > Math.abs(n[2]) ? [p[2]/4+.5,p[1]/4+.5] : [p[0]/4+.5,p[1]/4+.5]);
+      // One ship-length atlas: opposing faces share construction logic, never a repeated four-unit tile.
+      const coords = tex?.[i] ?? (Math.abs(n[1]) >= Math.max(Math.abs(n[0]),Math.abs(n[2])) ? [p[0]/5+.5,(p[2]+5.8)/12] : Math.abs(n[0]) > Math.abs(n[2]) ? [(p[2]+5.8)/12,p[1]/5+.5] : [p[0]/5+.5,p[1]/5+.5]);
       this.uvs.push(coords[0],coords[1]);
     });
     for (let i=1;i<ordered.length-1;i++) this.indices.push(start,start+i,start+i+1);
@@ -142,25 +143,25 @@ async function shipTextures(): Promise<Texture[]> {
   const height=new Float32Array(size*size), panels=new Float32Array(size*size);
   const grain=new Float32Array(size*size);
   // Staggered unequal plates, with broad underlying machining variation, not pixel noise.
-  const rowCount=12, rowHeight=size/rowCount;
+  const rowCount=32, rowHeight=size/rowCount;
   for (let row=0;row<rowCount;row++) {
     let left=0;
     while (left<size) {
-      const right=Math.min(size,left+size*(.075+random()*.16));
+      const right=Math.min(size,left+size*(.025+random()*.07));
       const shade=.9+random()*.09;
       for (let y=Math.floor(row*rowHeight);y<Math.min(size,Math.ceil((row+1)*rowHeight));y++) for(let x=Math.floor(left);x<right;x++) {
         const i=y*size+x;
         const seam=Math.min(x-left,right-x,y-row*rowHeight,(row+1)*rowHeight-y);
         // Recessed seams, a raised access lid and corner screws share the same physical panel grid.
         const width=right-left, localX=(x-left)/width, localY=(y-row*rowHeight)/rowHeight;
-        const access=row%3===1 && width>size*.12;
+        const access=row%3===1 && width>size*.055;
         const lidEdge=access ? Math.min(Math.abs(localX-.23),Math.abs(localX-.77))*width : size;
         const lidHorizontal=access ? Math.min(Math.abs(localY-.27),Math.abs(localY-.73))*rowHeight : size;
         const lidSeam=access && ((localY>.27 && localY<.73 && lidEdge<size*.0018) || (localX>.23 && localX<.77 && lidHorizontal<size*.0018));
-        const screwX=Math.min(Math.abs(x-left-size*.008),Math.abs(right-x-size*.008));
-        const screwY=Math.min(Math.abs(y-row*rowHeight-size*.008),Math.abs((row+1)*rowHeight-y-size*.008));
-        const screw=Math.hypot(screwX,screwY)<size*.0025;
-        height[i]=lidSeam || screw ? .28 : Math.min(1,seam/(size*.0025));
+        const screwX=Math.min(Math.abs(x-left-size*.004),Math.abs(right-x-size*.004));
+        const screwY=Math.min(Math.abs(y-row*rowHeight-size*.004),Math.abs((row+1)*rowHeight-y-size*.004));
+        const screw=Math.hypot(screwX,screwY)<size*.0014;
+        height[i]=lidSeam || screw ? .4 : Math.min(1,seam/(size*.0013));
         panels[i]=shade-(access && localX>.23 && localX<.77 && localY>.27 && localY<.73 ? .045 : 0);
         grain[i]=random()-.5;
       }
@@ -172,9 +173,10 @@ async function shipTextures(): Promise<Texture[]> {
     const image=ctx.createImageData(size,size);
     for (let y=0;y<size;y++) for(let x=0;x<size;x++) {
       const i=y*size+x,j=i*4,h=height[i],p=panels[i];
-      const streak=Math.pow(.5+.5*Math.sin(x/size*139+Math.sin(y/size*9)*.35),16)*(.5+.5*Math.sin(y/size*19));
+      const streak=Math.pow(.5+.5*Math.sin(x/size*439+Math.sin(x/size*127)*4.7),22)*(.5+.5*Math.sin(y/size*19+x/size*17));
+      const scorch=Math.exp(-((x/size-.49)**2/.045+(y/size-.88)**2/.013))*.17;
       const wear=Math.pow(1-h,2)*.12;
-      const weather=Math.sin(x/size*43+y/size*7)*Math.sin(y/size*67)*.018+grain[i]*.014-streak*.045+wear;
+      const weather=Math.sin(x/size*43+y/size*7)*Math.sin(y/size*67)*.018+grain[i]*.014-streak*.07-scorch+wear;
       if (map===0) {
         const value=(.42+h*.58)*(p+weather);
         image.data[j]=Math.round(246*value); image.data[j+1]=Math.round(243*value); image.data[j+2]=Math.round(232*value);
@@ -184,7 +186,7 @@ async function shipTextures(): Promise<Texture[]> {
         const d=Math.hypot(dx,dy,1);
         image.data[j]=Math.round(128-dx/d*127); image.data[j+1]=Math.round(128-dy/d*127); image.data[j+2]=Math.round(128+127/d);
       } else if(map===2) {
-        image.data[j]=255; image.data[j+1]=Math.round(255*(.56+(1-p)*.55+(1-h)*.25+streak*.14-wear*.6)); image.data[j+2]=Math.round(255*(.78+(1-h)*.2));
+        image.data[j]=255; image.data[j+1]=Math.round(255*(.62+(1-p)*.55+(1-h)*.25+streak*.2+scorch-wear*.6)); image.data[j+2]=Math.round(255*(.78+(1-h)*.2));
       } else {
         image.data[j]=image.data[j+1]=image.data[j+2]=Math.round(255*(.48+h*.52));
       }
@@ -197,9 +199,8 @@ async function shipTextures(): Promise<Texture[]> {
   canvas.width=Math.min(256,bound);canvas.height=Math.min(256,bound);
   const plume=ctx.createImageData(canvas.width,canvas.height);
   for(let y=0;y<canvas.height;y++) for(let x=0;x<canvas.width;x++) {
-    const u=x/canvas.width,v=y/(canvas.height-1),i=(y*canvas.width+x)*4;
-    const ripples=.76+.24*Math.cos(v*52-u*Math.PI*4);
-    const fade=Math.pow(1-v,1.5)*ripples;
+    const v=y/(canvas.height-1),i=(y*canvas.width+x)*4;
+    const fade=Math.exp(-v*4.5)*(1-v)*(1-v);
     plume.data[i]=195+60*(1-v);plume.data[i+1]=210+45*(1-v);plume.data[i+2]=255;
     plume.data[i+3]=Math.round(155*fade);
   }
@@ -226,18 +227,18 @@ async function shipTextures(): Promise<Texture[]> {
 }
 
 /** Forward -Z, dorsal +Y. Solid hull spans -5.6..4.95 Z; exhaust reaches +6.3. */
-export async function createShipModel(): Promise<ShipModel> {
-  const textures=await shipTextures();
+export async function createShipModel(hullClass: ShipHullClass = 'capital', sharedTextures?: Texture[]): Promise<ShipModel> {
+  const textures=sharedTextures ?? await shipTextures();
   const [albedo,normal,metallicRoughness,ao,white,plumeMap,throatMap,registryMap]=textures;
   const root=new Group(), geometries:Geometry[]=[], engines:Mesh[]=[];
-  const sampler={addressModeU:'repeat',addressModeV:'repeat',minFilter:'linear',magFilter:'linear',mipmapFilter:'linear'} as const;
-  const metal=(color:Color,roughness=.8,metallic=.7) => new PBRMaterial({texture:albedo,color,normalTexture:normal,normalScale:.55,metallicRoughnessTexture:metallicRoughness,occlusionTexture:ao,occlusionStrength:.65,roughness,metallic,alphaMode:'OPAQUE',textureSampler:sampler,normalSampler:sampler,metallicRoughnessSampler:sampler,occlusionSampler:sampler});
-  const armor=metal([.93,.96,.91],.9,.09), structure=metal([.16,.22,.25],.95,.72), edges=metal([.62,.72,.75],.48,.98), radiator=metal([.74,.36,.14],.66,.93);
-  const windowMaterial=new PBRMaterial({texture:white,color:[.13,.27,.35],metallic:.4,roughness:.25,emissive:[.12,.3,.4]});
-  const registryMaterial=new PBRMaterial({texture:registryMap,color:[1,1,1],metallic:.2,roughness:.8});
+  const sampler={addressModeU:'clamp-to-edge',addressModeV:'clamp-to-edge',minFilter:'linear',magFilter:'linear',mipmapFilter:'linear'} as const;
+  const metal=(color:Color,roughness=.8,metallic=.7) => new PBRMaterial({texture:albedo,color,normalTexture:normal,normalScale:.38,metallicRoughnessTexture:metallicRoughness,occlusionTexture:ao,occlusionStrength:.7,roughness,metallic,alphaMode:'OPAQUE',textureSampler:sampler,normalSampler:sampler,metallicRoughnessSampler:sampler,occlusionSampler:sampler});
+  const armor=metal([.73,.77,.73],.87,.055), structure=metal([.16,.22,.25],.93,.72), edges=metal([.49,.57,.6],.55,.98), radiator=metal([.37,.22,.14],.82,.93);
+  const windowMaterial=new PBRMaterial({texture:white,color:[.13,.27,.35],metallic:.4,roughness:.25,emissive:[.12,.3,.4],alphaMode:'OPAQUE'});
+  const registryMaterial=new PBRMaterial({texture:registryMap,color:[1,1,1],metallic:.2,roughness:.8,alphaMode:'OPAQUE'});
   const add=(builder:HullBuilder,material:PBRMaterial):Mesh => {
     const geometry=builder.geometry();geometries.push(geometry);
-    return root.add(new Mesh({geometry,material}));
+    return root.add(new Mesh({geometry,material,castShadow:material===armor||material===structure||material===edges,receiveShadow:material.alphaMode==='OPAQUE'&&material!==windowMaterial&&material!==registryMaterial}));
   };
   const chassis=new HullBuilder(), plating=new HullBuilder(), trim=new HullBuilder(), fins=new HullBuilder(), windows=new HullBuilder(), markings=new HullBuilder();
   // The pressure hull sits below the armor: the spine channel is open geometry, not a painted seam.
@@ -289,7 +290,8 @@ export async function createShipModel(): Promise<ShipModel> {
   // Outboard mission sponsons: the roof, sill and bulkheads enclose empty space,
   // leaving the maintenance chambers genuinely recessed instead of painting black rectangles.
   for(const side of [-1,1]) {
-    for(const [z0,z1,inside,outside,roof] of [[-2.75,-1.45,1.44,1.94,.42],[-1.22,1.3,1.74,2.16,.59]]) {
+    const chambers=hullClass==='frigate' ? [[-1.22,.8,1.52,1.85,.52]] : [[-2.75,-1.45,1.44,1.94,.42],[-1.22,1.3,1.74,hullClass==='cruiser'?2.36:2.16,.59]];
+    for(const [z0,z1,inside,outside,roof] of chambers) {
       const axis:Point=[side,0,0], inner=side*inside, outer=side*outside;
       chassis.face([[inner,-.29,z0],[inner,roof-.1,z0],[inner,roof-.1,z1],[inner,-.29,z1]],axis);
       chassis.face([[inner,-.29,z0],[outer,-.29,z0],[outer,-.29,z1],[inner,-.29,z1]],[0,1,0]);
@@ -348,22 +350,24 @@ export async function createShipModel(): Promise<ShipModel> {
   plating.panel([[-.21,-.83,-2.35],[.21,-.83,-2.35],[.28,-.92,-.8],[.23,-.91,2.35],[-.23,-.91,2.35],[-.28,-.92,-.8]],[0,-1,0],.07,.08,trim);
   for(const z of [-1.9,-.8,.3,1.4]) trim.pipe([[-.35,-.56,z],[-.4,-.75,z],[-.25,-.87,z],[.25,-.87,z],[.4,-.75,z],[.35,-.56,z]],.035,8);
   // A tapered bridge, recessed panoramic glazing and an offset sensor mast.
-  trim.sweep([[.15,.18,.08],[.55,.44,.22],[1.68,.4,.23],[1.95,.28,.15]],[0,.76,0]);
-  plating.sweep([[.48,.3,.12],[.7,.48,.19],[1.65,.43,.2],[1.88,.27,.12]],[0,1.02,0]);
-  trim.sweep([[1.35,.07,.1],[1.65,.12,.4],[1.78,.08,.32]],[.2,1.3,0]);
-  trim.pipe([[.2,1.32,1.58],[.2,1.95,1.58]],.05);
-  trim.pipe([[-.08,1.82,1.58],[.49,1.82,1.58]],.035);
-  chassis.lathe([[1.28,.13],[1.38,.18],[1.46,.18],[1.48,.12]],.2,1.77,16);
-  windows.face([[.08,1.69,1.275],[.32,1.69,1.275],[.32,1.85,1.275],[.08,1.85,1.275]],[0,0,-1]);
+  const bridgeHeight=hullClass==='frigate' ? .88 : hullClass==='cruiser' ? 1.16 : 1.02;
+  trim.sweep([[.15,.18,.08],[.55,.44,.22],[1.68,.4,.23],[1.95,.28,.15]],[0,bridgeHeight-.26,0]);
+  plating.sweep([[.48,.3,.12],[.7,.48,.19],[1.65,.43,.2],[1.88,.27,.12]],[0,bridgeHeight,0]);
+  trim.sweep([[1.35,.07,.1],[1.65,.12,.4],[1.78,.08,.32]],[.2,bridgeHeight+.28,0]);
+  trim.pipe([[.2,bridgeHeight+.3,1.58],[.2,bridgeHeight+.93,1.58]],.025);
+  trim.pipe([[-.08,bridgeHeight+.8,1.58],[.49,bridgeHeight+.8,1.58]],.018);
+  chassis.lathe([[1.28,.09],[1.38,.13],[1.46,.13],[1.48,.09]],.2,bridgeHeight+.75,24);
+  windows.face([[.135,bridgeHeight+.71,1.275],[.265,bridgeHeight+.71,1.275],[.265,bridgeHeight+.79,1.275],[.135,bridgeHeight+.79,1.275]],[0,0,-1]);
   for(const side of [-1,1]) {
     for(let i=0;i<9;i++) {
       const z=.76+i*.105,x=side*(.484-(z-.7)*.053);
-      windows.face([[x,1.045,z],[x,1.085,z],[x-side*.003,1.085,z+.055],[x-side*.003,1.045,z+.055]],[side,0,0]);
+      windows.face([[x,bridgeHeight+.025,z],[x,bridgeHeight+.052,z],[x-side*.003,bridgeHeight+.052,z+.037],[x-side*.003,bridgeHeight+.025,z+.037]],[side,0,0]);
     }
-    // Seven spaced swept radiator vanes per side give a recognizable serrated aft silhouette.
-    for(let i=0;i<7;i++) {
-      const z=1.85+i*.235;
-      fins.plate([[side*1.37,.18,z],[side*1.91,.12,z+.18],[side*2.02,.10,z+.30],[side*1.46,.16,z+.13]],.035,.035);
+    // Class-specific radiator span changes the far-field silhouette without moving gun mounts.
+    const vaneCount=hullClass==='frigate'?4:hullClass==='cruiser'?10:7;
+    for(let i=0;i<vaneCount;i++) {
+      const z=1.85+i*(1.41/vaneCount),span=hullClass==='cruiser'?2.5:hullClass==='frigate'?1.78:2.02;
+      fins.plate([[side*1.37,.18,z],[side*(span-.11),.12,z+.18],[side*span,.10,z+.30],[side*1.46,.16,z+.13]],.035,.035);
       trim.pipe([[side*1.47,.17,z+.09],[side*1.91,.115,z+.24]],.024,8);
     }
     // A dark recessed vent bed, spaced louvres and two headers form each aft radiator bank.
@@ -374,6 +378,33 @@ export async function createShipModel(): Promise<ShipModel> {
     }
     fins.pipe([[side*.73,.54,2.12],[side*.7,.53,3.48],[side*1.3,.25,3.7]],.043);
     fins.pipe([[side*1.2,.5,2.12],[side*1.18,.48,3.44]],.038);
+    // A pressure docking collar with backing hatch and eight radial locking dogs.
+    const collar:Point[]=[],cx=side*1.66,cy=-.03,cz=.03;
+    for(let i=0;i<=24;i++) {const a=i/24*Math.PI*2;collar.push([cx,cy+Math.cos(a)*.19,cz+Math.sin(a)*.19]);}
+    trim.pipe(collar,.025,8);
+    chassis.face(collar.slice(0,24).map(p=>[p[0]-side*.028,p[1],p[2]] as Point),[side,0,0]);
+    for(let i=0;i<8;i++) {
+      const a=i/8*Math.PI*2;
+      trim.pipe([[cx,cy+Math.cos(a)*.155,cz+Math.sin(a)*.155],[cx+side*.036,cy+Math.cos(a)*.19,cz+Math.sin(a)*.19]],.014,6);
+    }
+    // Fore/aft attitude-control pods contain paired recessed exhaust bells.
+    for(const z of [-3.28,3.54]) for(const y of [-.19,.2]) {
+      const x=side*(z<0?.87:1.31);
+      chassis.sweep([[z-.13,.09,.08],[z,.13,.11],[z+.15,.08,.07]],[x,y,0]);
+      for(const offset of [-.04,.04]) {
+        trim.lathe([[z-.16,.037],[z-.22,.052],[z-.24,.052],[z-.24,.031],[z-.17,.023]],x+offset,y,12);
+        chassis.lathe([[z-.17,.023],[z-.13,0]],x+offset,y,12);
+      }
+    }
+    for(let i=0;i<5;i++) {
+      const z=1.42+i*.095,y=bridgeHeight+.28+(i%2)*.07;
+      trim.pipe([[side*.39,bridgeHeight+.17,z],[side*.62,y,z]],.008,6);
+    }
+    // Discrete small apertures establish scale without a luminous stripe.
+    for(let i=0;i<22;i++) {
+      const z=-.95+i*.092,x=side*1.65;
+      windows.face([[x,-.11,z],[x,-.087,z],[x,-.087,z+.028],[x,-.11,z+.028]],[side,0,0]);
+    }
     // Follow the sloping armor surface, above its inset bevel rather than buried in the plate.
     markings.face([[side*.43,.594,-.56],[side*1.04,.594,-.56],[side*1.04,.599,-.26],[side*.43,.599,-.26]],[0,1,0],side===1?[[0,1],[1,1],[1,0],[0,0]]:[[1,0],[0,0],[0,1],[1,1]]);
   }
@@ -392,11 +423,16 @@ export async function createShipModel(): Promise<ShipModel> {
   for(const [x,y,z] of SHIP_TURRET_MOUNTS) {
     const housing=root.add(new Group()), barrels=housing.add(new Group());
     housing.position.set(x,y+BARREL_HEIGHT,z);
-    housing.add(new Mesh({geometry:turretGeometry[0],material:edges}));
-    housing.add(new Mesh({geometry:turretGeometry[1],material:armor}));
-    barrels.add(new Mesh({geometry:turretGeometry[2],material:edges}));
-    barrels.add(new Mesh({geometry:turretGeometry[3],material:structure}));
+    housing.add(new Mesh({geometry:turretGeometry[0],material:edges,castShadow:true,receiveShadow:true}));
+    housing.add(new Mesh({geometry:turretGeometry[1],material:armor,castShadow:true,receiveShadow:true}));
+    barrels.add(new Mesh({geometry:turretGeometry[2],material:edges,castShadow:true,receiveShadow:true}));
+    barrels.add(new Mesh({geometry:turretGeometry[3],material:structure,castShadow:true,receiveShadow:true}));
     turrets.push({root:housing,barrels,muzzles:BARREL_OFFSETS.map(offset=>new Vector3(offset,0,MUZZLE_Z))});
+  }
+  for(const side of [-1,1]) {
+    const nav=new HullBuilder(),color:Color=side<0?[.38,.018,.009]:[.012,.27,.065];
+    for(const z of [-2.61,1.3]) nav.pipe([[side*1.91,.32,z],[side*1.95,.32,z]],.018,12);
+    add(nav,new PBRMaterial({texture:white,color,emissive:color,metallic:0,roughness:.38,alphaMode:'OPAQUE'}));
   }
   add(chassis,structure);add(plating,armor);add(fins,radiator);add(windows,windowMaterial);add(markings,registryMaterial);
   const segments=Math.min(48,Math.max(24,Math.floor(CONTRACT.visual.terrainSegments/4)));
@@ -415,11 +451,14 @@ export async function createShipModel(): Promise<ShipModel> {
     const disc=new HullBuilder(), ring:Point[]=[];
     for(let i=0;i<segments;i++) {const a=i/segments*Math.PI*2;ring.push([x+Math.cos(a)*r*.67,-.02+Math.sin(a)*r*.67,4.57]);}
     disc.face(ring,[0,0,1],ring.map(p=>[(p[0]-x)/(r*1.34)+.5,(p[1]+.02)/(r*1.34)+.5]));
+    disc.lathe([[4.73,r*.72],[4.76,r*.74],[4.76,r*.68],[4.73,r*.67]],x,-.02,segments);
     const glow: [number,number,number]=warm ? [2.1,.82,.23] : [.25,1.05,1.9];
-    throats.push(add(disc,new PBRMaterial({texture:throatMap,emissiveTexture:throatMap,color:warm?[.7,.25,.07]:[.08,.36,.65],emissive:glow,roughness:.4,metallic:.1})));
+    const throat=add(disc,new PBRMaterial({texture:throatMap,emissiveTexture:throatMap,color:warm?[.7,.25,.07]:[.08,.36,.65],emissive:glow,roughness:.4,metallic:.1,alphaMode:'OPAQUE'}));
+    throat.receiveShadow=false;throats.push(throat);
     const exhaust=new HullBuilder();
-    exhaust.lathe([[4.87,r*.65],[5.15,r*.72],[5.56,r*.42],[6.3,r*.025]],x,-.02,segments);
-    plumes.push(add(exhaust,new PBRMaterial({texture:plumeMap,emissiveTexture:plumeMap,color:warm?[1,.47,.16]:[.26,.73,1],emissive:warm?[1.65,.6,.13]:[.14,.75,1.4],roughness:1,metallic:0,transparent:true,opacity:.75,doubleSided:true,alphaMode:'BLEND'})));
+    exhaust.lathe([[4.87,r*.52],[5.18,r*.49],[5.65,r*.27],[6.3,r*.008]],x,-.02,segments);
+    exhaust.lathe([[4.87,r*.2],[5.3,r*.16],[6.05,r*.075],[6.9,r*.002]],x,-.02,segments);
+    plumes.push(add(exhaust,new PBRMaterial({texture:plumeMap,emissiveTexture:plumeMap,color:warm?[1,.57,.25]:[.4,.73,1],emissive:warm?[2,.8,.24]:[.3,.9,1.8],roughness:1,metallic:0,transparent:true,opacity:.46,doubleSided:true,alphaMode:'BLEND'})));
   }
   add(trim,edges);add(nozzle,edges);engines.push(...throats,...plumes);
   return {root,textures,geometries,engines,turrets};

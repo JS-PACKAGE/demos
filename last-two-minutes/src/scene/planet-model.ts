@@ -1,6 +1,8 @@
 import { Geometry, Group, InstancedMesh, Matrix4, Mesh, NativeMaterial3D, PBRMaterial, Quaternion, Texture, Vector3 } from 'xyz.js';
 import { CONTRACT, seededRandom } from '../show/contract.ts';
-import { clamp, cross, direction, fbm, noise, normalize, smooth, terrain, terrainColor, type Point } from './planet-noise.ts';
+import { clamp, cross, direction, fbm, noise, normalize, smooth, terrain, terrainColor } from './planet-noise.ts';
+import type { Point } from './planet-noise.ts';
+import { createGroundLandscape } from './ground.ts';
 
 export interface PlanetModel {
   root:Group;
@@ -13,6 +15,7 @@ export interface PlanetModel {
   reset():void;
   setDamage(progress:number):void;
   setBreakup(age:number):void;
+  setSurfaceView(active:boolean):void;
 }
 
 type Vertex = { p:Point; n:Point; uv:readonly [number,number] };
@@ -34,16 +37,22 @@ function triangleGeometry(triangles:Vertex[]):Geometry {
 }
 
 /** The position field and every map sample share a seeded 3D field, including the longitude seam. */
-async function makeSurfaceMaps():Promise<Texture[]> {
+async function makeSurfaceMaps(cloudPixels:Uint8ClampedArray):Promise<Texture[]> {
   const w=CONTRACT.visual.textureSize,h=Math.floor(w/2),length=w*h;
   const color=new Uint8ClampedArray(length*4),rough=new Uint8ClampedArray(length*4),normal=new Uint8ClampedArray(length*4),cities=new Uint8ClampedArray(length*4),heights=new Float32Array(length);
+  const sun=normalize(CONTRACT.visual.lightDirection);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const i=y*w+x,k=i*4,p=direction(x/(w-1),y/(h-1)),t=terrain(...p),rgb=terrainColor(t,p[1]);
     // The mesh carries broad relief; this map adds only unresolved erosion and grain.
     heights[i]=CONTRACT.visual.terrainHeight*t.land*(.012*(t.detail-.5)-.012*t.valley+.008*t.arid*t.dune);
-    for(let c=0;c<3;c++)color[k+c]=Math.round(Math.sqrt(rgb[c])*255);
+    // Project the elevated cloud field toward the sun, with a small penumbra footprint.
+    const q=normalize([p[0]+sun[0]*.009,p[1]+sun[1]*.009,p[2]+sun[2]*.009]);
+    const cx=Math.round(((Math.atan2(q[2],q[0])/TAU+1)%1)*(w-1)),cy=Math.round(Math.acos(clamp(q[1],-1,1))/Math.PI*(h-1));
+    let cloud=0;for(let dx=-2;dx<=2;dx++)cloud+=cloudPixels[(cy*w+(cx+dx+w)%w)*4+3]!/1275;
+    const shade=1-cloud*.48*smooth(-.04,.16,p[0]*sun[0]+p[1]*sun[1]+p[2]*sun[2]);
+    for(let c=0;c<3;c++)color[k+c]=Math.round(Math.sqrt(rgb[c]*shade)*255);
     color[k+3]=rough[k+3]=normal[k+3]=cities[k+3]=255;
-    rough[k]=255;rough[k+1]=Math.round((.23+(.95-.23)*t.land+(t.detail-.5)*.045)*255);rough[k+2]=0;
+    rough[k]=255;rough[k+1]=Math.round((.075+(.95-.075)*t.land+(t.detail-.5)*.045)*255);rough[k+2]=0;
   }
   // Compact coastal settlements and dim connecting corridors, never a planet-wide street grid.
   const random=seededRandom(CONTRACT.seed+319),settlements:Point[]=[];
@@ -71,6 +80,8 @@ async function makeSurfaceMaps():Promise<Texture[]> {
   }
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const i=y*w+x,k=i*4,latitude=Math.sin(y/(h-1)*Math.PI);
+    const p=direction(x/(w-1),y/(h-1)),night=1-smooth(-.16,.08,p[0]*sun[0]+p[1]*sun[1]+p[2]*sun[2]);
+    for(let c=0;c<3;c++)cities[k+c]=cities[k+c]!*night;
     const left=heights[y*w+(x===0?w-2:x-1)]!,right=heights[y*w+(x===w-1?1:x+1)]!;
     const up=heights[Math.max(0,y-1)*w+x]!,down=heights[Math.min(h-1,y+1)*w+x]!;
     const sx=(right-left)/(TAU*CONTRACT.visual.planetRadius*Math.max(.03,latitude)*2/(w-1));
@@ -82,7 +93,7 @@ async function makeSurfaceMaps():Promise<Texture[]> {
 }
 
 /** Cloud density is a continuous spherical field, not a painted limb or latitude stripe. */
-async function makeCloudMap():Promise<Texture> {
+async function makeCloudMap():Promise<{texture:Texture;pixels:Uint8ClampedArray}> {
   const w=CONTRACT.visual.textureSize,h=w/2,pixels=new Uint8ClampedArray(w*h*4);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const p=direction(x/(w-1),y/(h-1));
@@ -92,26 +103,25 @@ async function makeCloudMap():Promise<Texture> {
     px=-.36+dx*Math.cos(turn)-dy*Math.sin(turn);py=.32+dx*Math.sin(turn)+dy*Math.cos(turn);
     const ax=px-.43,ay=py+.28,second=-1.9*Math.exp(-(ax*ax+ay*ay)*29)*smooth(-.2,.55,p[2]);
     px=.43+ax*Math.cos(second)-ay*Math.sin(second);py=-.28+ax*Math.sin(second)+ay*Math.cos(second);
-    const warp=fbm(px*9+11,py*9-3,p[2]*9+7,3)-.5;
-    const weather=fbm(px*5+warp*.8,py*5,p[2]*5+warp*.8,5);
-    const strands=fbm(px*32+warp*2.4,py*32-7,p[2]*32+warp*2.4,4);
-    const front=1-Math.abs(noise(px*13+warp*1.5,py*7+3,p[2]*11)*2-1);
-    const filaments=fbm(px*113,py*113+13,p[2]*113,4);
-    const coverage=smooth(.48,.64,weather),fold=smooth(.28,.74,front);
-    const density=coverage*(.16+.84*fold)*smooth(.28,.68,strands);
-    // Optical depth yields dense cloud cores, feathered wisps and genuinely clear gaps.
-    const alpha=(1-Math.exp(-density*3.1))*smooth(.25,.63,filaments)*255;
-    const k=(y*w+x)*4,tint=235+strands*20;
-    pixels[k]=tint-2;pixels[k+1]=tint-1;pixels[k+2]=tint;pixels[k+3]=alpha;
+    const warp=fbm(px*5+11,py*5-3,p[2]*5+7,3)-.5;
+    const billows=fbm(px*43+warp,py*43-7,p[2]*43,4);
+    const weather=fbm(px*3.4+warp*.55,py*3.4,p[2]*3.4+warp*.55,4)+(billows-.5)*.045;
+    const cirrus=Math.pow(1-Math.abs(noise(px*11+py*4,py*3+3,p[2]*7)*2-1),8)*smooth(.51,.65,weather);
+    const coverage=smooth(.49,.59,weather);
+    // Fine turbulence changes optical depth, never cuts pixel-sized holes in the deck.
+    const density=coverage*(.35+1.6*billows)+cirrus*.12;
+    const alpha=(1-Math.exp(-density*2.7))*255;
+    const k=(y*w+x)*4,tint=202+billows*75;
+    pixels[k]=tint;pixels[k+1]=tint+1;pixels[k+2]=tint+2;pixels[k+3]=alpha;
   }
-  return imageTexture(w,h,pixels);
+  return {texture:await imageTexture(w,h,pixels),pixels};
 }
 
 function makeCloudShell():Geometry {
-  const columns=CONTRACT.visual.terrainSegments,rows=CONTRACT.visual.terrainRings,radius=CONTRACT.visual.planetRadius+.085;
+  const columns=CONTRACT.visual.terrainSegments/2,rows=CONTRACT.visual.terrainRings/2,radius=CONTRACT.visual.planetRadius+.085;
   const positions:number[]=[],normals:number[]=[],uvs:number[]=[],indices:number[]=[];
   for(let y=0;y<=rows;y++)for(let x=0;x<=columns;x++){
-    const p=direction(x/columns,y/rows),r=radius+terrain(...p).height;positions.push(p[0]*r,p[1]*r,p[2]*r);normals.push(...p);uvs.push(x/columns,y/rows);
+    const p=direction(x/columns,y/rows),r=radius;positions.push(p[0]*r,p[1]*r,p[2]*r);normals.push(...p);uvs.push(x/columns,y/rows);
   }
   for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){
     const a=y*(columns+1)+x,b=a+1,c=a+columns+1,d=c+1;
@@ -121,42 +131,41 @@ function makeCloudShell():Geometry {
 }
 
 function makeGlobe():Geometry {
-  const {terrainSegments:columns,terrainRings:rows,planetRadius:radius}=CONTRACT.visual;
+  const {terrainSegments,terrainRings,planetRadius:radius}=CONTRACT.visual;
+  // A permanently stitched polar terrain band covers the complete ground-camera path.
+  // Refining the globe itself avoids overlapping LOD skins, depth fighting and cut-time popping.
+  const columns=terrainSegments*3/2,latitudes:number[]=[];
+  for(let row=0;row<terrainRings;row++){
+    const subdivisions=row<terrainRings/4?6:1;
+    for(let step=0;step<subdivisions;step++)latitudes.push((row+step/subdivisions)/terrainRings);
+  }
+  latitudes.push(1);const rows=latitudes.length-1;
   const positions:number[]=[],normals:number[]=[],uvs:number[]=[],indices:number[]=[];
+  const sample=(u:number,v:number):Point=>{
+    const p=direction(u,clamp(v)),r=radius+terrain(...p).height;
+    return [p[0]*r,p[1]*r,p[2]*r];
+  };
   for(let y=0;y<=rows;y++)for(let x=0;x<=columns;x++){
-    const u=x/columns,v=y/rows,p=direction(u,v),r=radius+terrain(...p).height;
-    positions.push(p[0]*r,p[1]*r,p[2]*r);uvs.push(u,v);
-    normals.push(0,0,0);
+    const u=x/columns,v=latitudes[y]!,p=direction(u,v),point=sample(u,v),e=.00012;
+    positions.push(...point);uvs.push(u,v);
+    if(y===0||y===rows){normals.push(...p);continue;}
+    const a=sample(u-e,v),b=sample(u+e,v),c=sample(u,v-e),d=sample(u,v+e);
+    const n=normalize(cross([b[0]-a[0],b[1]-a[1],b[2]-a[2]],[d[0]-c[0],d[1]-c[1],d[2]-c[2]]));
+    normals.push(...n);
   }
   for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){
     const a=y*(columns+1)+x,b=a+1,c=a+columns+1,d=c+1;
     if(y!==0)indices.push(a,b,c);if(y!==rows-1)indices.push(b,d,c);
-  }
-  // Area-weighted normals describe the actual displaced triangles, not a second analytic bump.
-  for(let i=0;i<indices.length;i+=3){
-    const a=indices[i]!*3,b=indices[i+1]!*3,c=indices[i+2]!*3;
-    const ab:Point=[positions[b]!-positions[a]!,positions[b+1]!-positions[a+1]!,positions[b+2]!-positions[a+2]!];
-    const ac:Point=[positions[c]!-positions[a]!,positions[c+1]!-positions[a+1]!,positions[c+2]!-positions[a+2]!];
-    const n=cross(ab,ac);
-    for(const k of [a,b,c])for(let axis=0;axis<3;axis++)normals[k+axis]!+=n[axis]!;
-  }
-  for(let y=1;y<rows;y++){
-    const a=y*(columns+1)*3,b=(y*(columns+1)+columns)*3;
-    for(let axis=0;axis<3;axis++)normals[a+axis]=normals[b+axis]=normals[a+axis]!+normals[b+axis]!;
-  }
-  for(let y=0;y<=rows;y++)for(let x=0;x<=columns;x++){
-    const k=(y*(columns+1)+x)*3,p=y===0||y===rows?direction(x/columns,y/rows):normalize([normals[k]!,normals[k+1]!,normals[k+2]!]);
-    normals[k]=p[0];normals[k+1]=p[1];normals[k+2]=p[2];
   }
   return new Geometry({positions,normals,uvs,indices});
 }
 
 /** A front shell covers the disc as well as the limb; the shader fades its optical depth. */
 function makeAtmosphere():Geometry {
-  const columns=CONTRACT.visual.terrainSegments,rows=CONTRACT.visual.terrainRings;
+  const columns=CONTRACT.visual.terrainSegments/2,rows=CONTRACT.visual.terrainRings/2;
   const positions:number[]=[],normals:number[]=[],uvs:number[]=[],indices:number[]=[];
   for(let y=0;y<=rows;y++)for(let x=0;x<=columns;x++){
-    const p=direction(x/columns,y/rows),r=CONTRACT.visual.planetRadius+.13+terrain(...p).height;
+    const p=direction(x/columns,y/rows),r=CONTRACT.visual.planetRadius+.13;
     positions.push(p[0]*r,p[1]*r,p[2]*r);normals.push(...p);uvs.push(x/columns,y/rows);
   }
   for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){
@@ -181,15 +190,15 @@ async function makeFractureMaps():Promise<Texture[]> {
     const column=Math.min(2,Math.floor(u*3)),row=Math.min(1,Math.floor(v/.36)),variant=row*3+column;
     const t=fragmentTerrain(variant,u*3-column,v/.36-row),land=terrainColor(t,t.latitude);
     const edge=Math.exp(-Math.pow((v-.766-bend)/.009,2))*(.28+.72*noise(u*71,v*27,3));
-    const veins=fissure*smooth(.82,.98,v)*(.03+.12*layer);
+    const veins=smooth(.83,.98,v)*(.16+.62*grain)*(.35+.65*layer);
     const stone=(.045+grain*.09+layer*.035+fine*.02)*(1-fissure*.64);
     for(let c=0;c<3;c++)albedo[i+c]=outer?Math.sqrt(land[c])*255:Math.sqrt(stone*(c===0?1.12:c===1?1:.87))*255;
-    emission[i]=(edge+veins)*255;emission[i+1]=(edge*.22+veins*.07)*255;emission[i+2]=edge*.018*255;
+    emission[i]=Math.min(1,edge+veins)*255;emission[i+1]=(edge*.38+veins*.52)*255;emission[i+2]=(edge*.04+veins*.09)*255;
     heights[index]=outer?CONTRACT.visual.terrainHeight*(.012*(t.detail-.5)+.008*t.ridge-.012*t.valley)-fissure*.008:grain*.027+layer*.019-fissure*.025;
     rough[i]=255;rough[i+1]=(outer?.9:.93+fine*.06)*255;rough[i+2]=0;
     albedo[i+3]=emission[i+3]=normal[i+3]=rough[i+3]=255;
-    const flow=fbm(u*9+17,v*13-8,31,4),hot=smooth(.68,.9,1-Math.abs(flow*2-1))*(.18+.82*grain);
-    melt[i]=8+hot*190;melt[i+1]=6+hot*hot*76;melt[i+2]=4+hot*hot*12;melt[i+3]=255;
+    const flow=fbm(u*9+17,v*13-8,31,4),hot=smooth(.4,.8,1-Math.abs(flow*2-1))*(.35+.65*grain);
+    melt[i]=18+hot*230;melt[i+1]=9+hot*hot*155;melt[i+2]=5+hot*hot*38;melt[i+3]=255;
   }
   for(let y=0;y<size;y++)for(let x=0;x<size;x++){
     const i=(y*size+x)*4,left=heights[y*size+Math.max(0,x-1)]!,right=heights[y*size+Math.min(size-1,x+1)]!;
@@ -223,7 +232,7 @@ function makeFragment(variant:number,random:()=>number):Geometry {
   for(let i=0;i<corners;i++){
     const a=outline[i]!,b=outline[(i+1)%corners]!;
     // The retained spherical skin is triangulated independently from the broken sidewalls.
-    const steps=4;
+    const steps=8;
     for(let ring=0;ring<steps;ring++)for(let along=0;along<=ring;along++){
       const f=(ring+1)/steps,g=ring/steps;
       const at=(depth:number,t:number)=>top((a[0]*(1-t)+b[0]*t)*depth,(a[1]*(1-t)+b[1]*t)*depth);
@@ -463,28 +472,46 @@ export async function createPlanetModel():Promise<PlanetModel> {
   const {planetRadius:radius,fragmentCount,fragmentVariants}=CONTRACT.visual;
   const random=seededRandom(CONTRACT.seed),textures:Texture[]=[],geometries:Geometry[]=[];
   const root=new Group(),fragments=new Group();
-  const [maps,fractureMaps,cloudMap]=await Promise.all([makeSurfaceMaps(),makeFractureMaps(),makeCloudMap()]);textures.push(...maps,...fractureMaps,cloudMap);
+  const cloudField=await makeCloudMap();
+  const [maps,fractureMaps]=await Promise.all([makeSurfaceMaps(cloudField.pixels),makeFractureMaps()]);
+  const cloudMap=cloudField.texture;textures.push(...maps,...fractureMaps,cloudMap);
   const white=await imageTexture(1,1,new Uint8ClampedArray([255,255,255,255]));textures.push(white);
   const surfaceGeometry=makeGlobe();geometries.push(surfaceGeometry);
   // An opaque globe must write depth before its transparent shells; PBR defaults to BLEND.
   const surface=root.add(new Mesh({geometry:surfaceGeometry,material:new PBRMaterial({alphaMode:'OPAQUE',texture:maps[0]!,normalTexture:maps[1]!,normalScale:.9,metallicRoughnessTexture:maps[2]!,emissiveTexture:maps[3]!,emissive:[.32,.26,.2],roughness:1,metallic:0,specular:.45,textureSampler:{addressModeU:'repeat',addressModeV:'clamp-to-edge'},metallicRoughnessSampler:{addressModeU:'repeat',addressModeV:'clamp-to-edge'},normalSampler:{addressModeU:'repeat',addressModeV:'clamp-to-edge'},emissiveSampler:{addressModeU:'repeat',addressModeV:'clamp-to-edge'}})}));
   const atmosphereGeometry=makeAtmosphere();geometries.push(atmosphereGeometry);
   const atmosphereMaterial=new NativeMaterial3D({
-    texture:white,transparent:true,deformationBounds:0,label:'Sunlit orbital haze',
+    texture:white,transparent:true,deformationBounds:.6,uniforms:[0],label:'Sunlit orbital haze and fault venting',
     // Native image hooks return premultiplied RGB; the engine supplies solar illumination.
-    wgsl:`fn xyzDeform(position:vec3f,normal:vec3f,uv:vec2f)->XYZVertex{return XYZVertex(position,normal);}
+    wgsl:`fn xyzDeform(position:vec3f,normal:vec3f,uv:vec2f)->XYZVertex{
+        let scar=smoothstep(.7,.96,dot(normal,normalize(vec3f(${CONTRACT.visual.damageDirection.join(',')}))));
+        let vent=scar*mesh.custom[0].x*(.25+.2*sin(uv.x*91.0+uv.y*73.0));
+        return XYZVertex(position+normal*vent,normal);
+      }
       fn xyzSurface(world:vec3f,normal:vec3f,uv:vec2f,texel:vec4f)->vec4f{
         let view=normalize(scene.camera.xyz-world);let mu=max(dot(normalize(normal),view),0.0);
-        let depth=(.012+.18*pow(1.0-mu,3.0))*smoothstep(0.0,.18,mu);
-        return vec4f(vec3f(.06,.18,.36)*depth,depth);
+        let sun=dot(normalize(normal),normalize(scene.lightDirection.xyz));
+        let scar=smoothstep(.7,.96,dot(normalize(world),normalize(vec3f(${CONTRACT.visual.damageDirection.join(',')}))))*mesh.custom[0].x;
+        let depth=((1.0-exp(-.023/max(mu,.055)))+scar*.12)*smoothstep(0.0,.16,mu);
+        let dusk=1.0-smoothstep(-.15,.22,sun);
+        let tint=mix(mix(vec3f(.055,.18,.39),vec3f(.39,.115,.028),dusk),vec3f(.23,.14,.09),scar);
+        return vec4f(tint*depth,depth);
       }`,
     glsl:`#ifdef XYZ_VERTEX
-      XYZVertex xyzDeform(vec3 position,vec3 normal,vec2 uv){return XYZVertex(position,normal);}
+      XYZVertex xyzDeform(vec3 position,vec3 normal,vec2 uv){
+        float scar=smoothstep(.7,.96,dot(normal,normalize(vec3(${CONTRACT.visual.damageDirection.join(',')}))));
+        float vent=scar*xyzUniforms[0].x*(.25+.2*sin(uv.x*91.0+uv.y*73.0));
+        return XYZVertex(position+normal*vent,normal);
+      }
       #endif
       #if defined(XYZ_FRAGMENT)
       vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){
         vec3 view=normalize(cameraPosition-world);float mu=max(dot(normalize(normal),view),0.0);
-        float depth=(.012+.18*pow(1.0-mu,3.0))*smoothstep(0.0,.18,mu);return vec4(vec3(.06,.18,.36)*depth,depth);
+        float sun=dot(normalize(normal),normalize(direction));
+        float scar=smoothstep(.7,.96,dot(normalize(world),normalize(vec3(${CONTRACT.visual.damageDirection.join(',')}))))*xyzUniforms[0].x;
+        float depth=((1.0-exp(-.023/max(mu,.055)))+scar*.12)*smoothstep(0.0,.16,mu);
+        float dusk=1.0-smoothstep(-.15,.22,sun);
+        return vec4(mix(mix(vec3(.055,.18,.39),vec3(.39,.115,.028),dusk),vec3(.23,.14,.09),scar)*depth,depth);
       }
       #elif defined(XYZ_SHADOW)
       vec4 xyzSurface(vec3 world,vec3 normal,vec2 uv,vec4 texel){return texel;}
@@ -498,7 +525,8 @@ export async function createPlanetModel():Promise<PlanetModel> {
   });
   const clouds=root.add(new Mesh({geometry:cloudGeometry,castShadow:false,receiveShadow:false,material:cloudMaterial}));
   root.add(fragments);fragments.visible=false;
-  const fractureMaterial=new PBRMaterial({texture:fractureMaps[0]!,normalTexture:fractureMaps[1]!,normalScale:.8,metallicRoughnessTexture:fractureMaps[2]!,emissiveTexture:fractureMaps[3]!,emissive:[2.4,.95,.32],roughness:1,metallic:0,doubleSided:false});
+  const fractureMaterial=new PBRMaterial({texture:fractureMaps[0]!,normalTexture:fractureMaps[1]!,normalScale:.8,metallicRoughnessTexture:fractureMaps[2]!,emissiveTexture:fractureMaps[3]!,emissive:[2.4,.95,.32],roughness:1,metallic:0,doubleSided:false,alphaMode:'OPAQUE'});
+  const ground=await createGroundLandscape();root.add(ground.root);geometries.push(...ground.geometries);textures.push(...ground.textures);
   const variantMeshes:InstancedMesh[]=[];
   for(let i=0;i<Math.min(6,fragmentVariants);i++){
     const geometry=makeFragment(i,random);geometries.push(geometry);
@@ -509,7 +537,7 @@ export async function createPlanetModel():Promise<PlanetModel> {
     const y=clamp(1-2*(i+.5)/fragmentCount+(random()-.5)*.06,-.995,.995),a=i*Math.PI*(3-Math.sqrt(5))+(random()-.5)*.38,s=Math.sqrt(1-y*y);
     const d:Point=[Math.cos(a)*s,y,Math.sin(a)*s],t=normalize(cross(d,Math.abs(y)<.9?[0,1,0]:[1,0,0]));
     const variant=i%variantMeshes.length,mesh=variantMeshes[variant]!,slot=slots[variant]!;slots[variant]=slot+1;
-    const hero=i%31===7,size=hero?1.55+random()*.48:.34+random()*random()*.92,depth=hero?.85+random()*.45:.52+random()*.65;
+    const hero=i%31===7,size=hero?1.55+random()*.48:.64+random()*random()*.78,depth=hero?.85+random()*.45:.72+random()*.65;
     const yaw=Math.atan2(d[0],d[2])*.5,pitch=-Math.asin(d[1])*.5;
     const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
     flights.push({mesh,slot,direction:d,tangent:t,aim:[cy*sx,sy*cx,-sy*sx,cy*cx],size,depth,roll:random()*TAU,speed:hero?.35+random()*.45:.55+random()*1.25,spin:[(random()-.5)*.38,(random()-.5)*.38,(random()-.5)*.38]});
@@ -517,8 +545,8 @@ export async function createPlanetModel():Promise<PlanetModel> {
   }
   const matrix=new Matrix4(),position=new Vector3(),rotation=new Quaternion(),spin=new Quaternion(),scale=new Vector3();
   const cracks:Mesh[]=[];
-  const wallMaterial=new PBRMaterial({alphaMode:'OPAQUE',texture:fractureMaps[0]!,normalTexture:fractureMaps[1]!,normalScale:1.2,metallicRoughnessTexture:fractureMaps[2]!,emissiveTexture:fractureMaps[3]!,emissive:[.18,.05,.008],roughness:1,metallic:0,specular:.12});
-  const interiorMaterial=new PBRMaterial({alphaMode:'OPAQUE',texture:fractureMaps[4]!,emissiveTexture:fractureMaps[4]!,emissive:[1.1,.48,.1],roughness:.95,metallic:0,specular:.08});
+  const wallMaterial=new PBRMaterial({alphaMode:'OPAQUE',texture:fractureMaps[0]!,normalTexture:fractureMaps[1]!,normalScale:1.2,metallicRoughnessTexture:fractureMaps[2]!,emissiveTexture:fractureMaps[3]!,emissive:[1.8,1.2,.5],roughness:1,metallic:0,specular:.12});
+  const interiorMaterial=new PBRMaterial({alphaMode:'OPAQUE',texture:fractureMaps[4]!,emissiveTexture:fractureMaps[4]!,emissive:[2.5,1.8,.9],roughness:.95,metallic:0,specular:.08});
   const damage=makeDamagedCrust(surface,clouds,wallMaterial,interiorMaterial,root,geometries,cracks);
   const updateFragments=(age:number)=>{
     const glow=1-smooth(2.5,9,age);
@@ -539,9 +567,10 @@ export async function createPlanetModel():Promise<PlanetModel> {
       scale.set(flight.size,flight.size,flight.depth);matrix.compose(position,rotation,scale);flight.mesh.setMatrixAt(flight.slot,matrix);
     }
   };
-  const setDamage=(progress:number)=>damage.update(progress);
+  const setDamage=(progress:number)=>{damage.update(progress);atmosphereMaterial.uniforms[0]=clamp(progress);};
   const reset=()=>{surface.visible=true;atmosphere.visible=true;clouds.visible=true;fragments.visible=false;setDamage(0);updateFragments(0);};
   const setBreakup=(age:number)=>{const t=Math.max(0,age);surface.visible=false;atmosphere.visible=false;clouds.visible=false;damage.group.visible=false;fragments.visible=true;updateFragments(t);};
+  const setSurfaceView=(active:boolean)=>{ground.root.visible=active&&!fragments.visible;if(!fragments.visible){surface.visible=!active&&damage.group.visible===false;clouds.visible=!active;atmosphere.visible=!active;}};
   reset();
-  return {root,surface,atmosphere,cracks,fragments,textures,geometries,reset,setDamage,setBreakup};
+  return {root,surface,atmosphere,cracks,fragments,textures,geometries,reset,setDamage,setBreakup,setSurfaceView};
 }
