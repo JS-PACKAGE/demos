@@ -1,4 +1,5 @@
 import { createRuntime, type ShowRuntime } from './scene/runtime.ts';
+import { createFilm } from './ui/film.ts';
 import type { ShowSample } from './show/director.ts';
 import './style.css';
 
@@ -19,6 +20,8 @@ const pause = document.querySelector<HTMLButtonElement>('#pause')!;
 const resume = document.querySelector<HTMLButtonElement>('#resume')!;
 const replay = document.querySelector<HTMLButtonElement>('#replay')!;
 const chapters = [...document.querySelectorAll<HTMLElement>('.chapters li')];
+const film = createFilm(canvas.parentElement!, canvas);
+film.update(0);
 let runtime: ShowRuntime | undefined;
 let busy = false;
 let muted = false;
@@ -68,6 +71,7 @@ function frame(sample: ShowSample): void {
     lastSecond = second;
     time.textContent = `${String(Math.floor(second / 60)).padStart(2, '0')}:${String(second % 60).padStart(2, '0')}`;
   }
+  film.update(sample.t);
   progress.value = sample.t;
   beat.textContent = `${String(sample.beat + 1).padStart(2, '0')} / ${sample.label}`;
   for (let i = 0; i < chapters.length; i++) chapters[i]!.classList.toggle('active', i === sample.beat);

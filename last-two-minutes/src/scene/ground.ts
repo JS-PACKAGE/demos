@@ -15,6 +15,20 @@ export function groundHeight(x:number,y:number,z:number):number {
   return terrain(x,y,z).height+(near*.3+far*.75)*(.22+.78*ridged)*(.25+.75*valley)+Math.max(0,hills);
 }
 
+/** Planet-local eye positions along the standing-camera shot, so no rock is generated inside the lens. */
+function eyePath():Point[] {
+  const shot=CONTRACT.cameraTrack.find(entry=>entry.subject==='surface')!,first=shot.frames[0]!.position,last=shot.frames[shot.frames.length-1]!.position;
+  const q=new Quaternion().setFromEuler(...CONTRACT.visual.planetRotation),eyes:Point[]=[];
+  for(let i=0;i<=10;i++){
+    const k=i/10,[x,y,z]=normalize([first[0]+(last[0]-first[0])*k,first[1]+(last[1]-first[1])*k,first[2]+(last[2]-first[2])*k]) as Point;
+    // World direction into the planet's local frame: rotate by the conjugate quaternion.
+    const tx=-2*(q.y*z-q.z*y),ty=-2*(q.z*x-q.x*z),tz=-2*(q.x*y-q.y*x);
+    const lx=x+q.w*tx-q.y*tz+q.z*ty,ly=y+q.w*ty-q.z*tx+q.x*tz,lz=z+q.w*tz-q.x*ty+q.y*tx,r=CONTRACT.visual.planetRadius+groundHeight(lx,ly,lz);
+    eyes.push([lx*r,ly*r,lz*r]);
+  }
+  return eyes;
+}
+
 export async function createGroundLandscape() {
   const root=new Group(),geometries:Geometry[]=[],textures:Texture[]=[],cols=384,rows=256;
   const positions:number[]=[],normals:number[]=[],uvs:number[]=[],indices:number[]=[],heights:number[]=[],slopes:number[]=[];
@@ -48,10 +62,14 @@ export async function createGroundLandscape() {
   const rockSource=Geometry.sphere(1,9,6),rp:number[]=[],rn:number[]=[],ru:number[]=[];
   for(let k=0;k<rockSource.vertices.length;k+=8){const x=rockSource.vertices[k]!,y=rockSource.vertices[k+1]!,z=rockSource.vertices[k+2]!,r=.78+noise(x*3+7,y*3,z*3)*.43;rp.push(x*r,y*r,z*r);rn.push(x,y,z);ru.push(.05+rockSource.vertices[k+6]!*.12,.07+rockSource.vertices[k+7]!*.12);}
   const rockGeometry=new Geometry({positions:rp,normals:rn,uvs:ru,indices:rockSource.indices});geometries.push(rockGeometry);
-  const rocks=root.add(new InstancedMesh({geometry:rockGeometry,material,count:720})),random=seededRandom(CONTRACT.seed+1927),matrix=new Matrix4(),position=new Vector3(),rotation=new Quaternion(),scale=new Vector3();
+  const rocks=root.add(new InstancedMesh({geometry:rockGeometry,material,count:720})),random=seededRandom(CONTRACT.seed+1927),matrix=new Matrix4(),position=new Vector3(),rotation=new Quaternion(),scale=new Vector3(),eyes=eyePath();
   for(let i=0;i<rocks.count;i++){
     const close=i<570,x=close?-.065+random()*.17:-.4+random()*.8,z=close?.035+random()*.087:-.23+random()*.34,p=point(x,z),size=close?.0007+Math.pow(random(),3)*.006:.003+random()*.018;
-    position.set(...p);rotation.setFromEuler(random()*3,random()*6,random()*3);scale.set(size*(.65+random()),size*(.38+random()*.55),size*(.6+random()));matrix.compose(position,rotation,scale);rocks.setMatrixAt(i,matrix);const tint=.7+random()*.35;rocks.setColorAt(i,tint,tint,tint);
+    position.set(...p);rotation.setFromEuler(random()*3,random()*6,random()*3);
+    const sx=size*(.65+random()),sy=size*(.38+random()*.55),sz=size*(.6+random()),reach=Math.max(sx,sy,sz)*1.4+.04;
+    // A rock inside the camera's reach fills the frame; collapse it instead of reshuffling the seeded layout.
+    const clear=eyes.every(e=>Math.hypot(p[0]-e[0],p[1]-e[1],p[2]-e[2])>reach),f=clear?1:1e-6;
+    scale.set(sx*f,sy*f,sz*f);matrix.compose(position,rotation,scale);rocks.setMatrixAt(i,matrix);const tint=.7+random()*.35;rocks.setColorAt(i,tint,tint,tint);
   }
   root.visible=false;
   return {root,geometries,textures};

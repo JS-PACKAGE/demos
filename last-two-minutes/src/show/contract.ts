@@ -22,6 +22,7 @@ export const CONTRACT = {
     breakupLead: 1.5,
     lightDirection: [-1, .45, .45] as Vec3,
     damageDirection: [-.25, .18, .95] as Vec3,
+    planetRotation: [-.06, .18, 0] as Vec3,
     shadowMapSize: 2048, environmentWidth: 256, stars: 320,
     views: {
       flyby: { position: [0, 4, 34] as Vec3, target: [0, 0, 0] as Vec3, fov: 45 },

@@ -11,9 +11,9 @@ import { createWeaponModel, type WeaponModel } from './weapon-model.ts';
 import { createCataclysm, type Cataclysm } from './cataclysm.ts';
 import { groundHeight } from './ground.ts';
 import { createSurfaceSky } from './sky.ts';
+import { cinematicCamera } from './cinema.ts';
 import type { SurfaceSky } from './sky.ts';
 
-const PLANET_ROTATION = [-.06, .18, 0] as const;
 const HERO = { from: 1, to: 17.5, startAngle: -55 * Math.PI / 180, angularSpeed: 9 * Math.PI / 180, radius: 12.8, scale: .36 };
 const EYE_HEIGHT = .003;
 const normalize = (v: Vec3): Vec3 => { const n = Math.hypot(...v) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
@@ -64,7 +64,7 @@ export class ShowScene extends Scene {
     this.shadows.mapSize = CONTRACT.visual.shadowMapSize; this.shadows.extent = 38;
     this.shadows.near = .1; this.shadows.far = 150; this.shadows.bias = .00035;
     this.pointLights.push(this.woundLight);
-    this.planetGroup.rotation.setFromEuler(...PLANET_ROTATION);
+    this.planetGroup.rotation.setFromEuler(...CONTRACT.visual.planetRotation);
     this.add(this.planetGroup);
     // The wound and beam target follow the planet's fixed orientation exactly.
     const damage = normalize(CONTRACT.visual.damageDirection), radius = CONTRACT.planet.radius;
@@ -190,8 +190,12 @@ export class ShowScene extends Scene {
       // The ground camera rides the true terrain surface, not a flat sphere.
       const scale = this.measureGround(sample.camera.position) / (Math.hypot(x, y, z) || 1); x *= scale; y *= scale; z *= scale;
     }
-    this.lens.position.set(x, y, z); this.aim.set(...sample.camera.target);
-    this.lens.fov = sample.camera.fov * Math.PI / 180; this.lens.lookAt(this.aim);
+    const shot = cinematicCamera(sample.t, [x, y, z], sample.camera.target, sample.camera.fov, sample.t >= surfaceStart && sample.t < surfaceEnd);
+    this.lens.position.set(...shot.position); this.aim.set(...shot.target);
+    this.lens.fov = shot.fov * Math.PI / 180; this.lens.lookAt(this.aim);
+    // Roll about the view axis, applied after lookAt: q * (0, 0, sin(r/2), cos(r/2)).
+    const q = this.lens.rotation, s = Math.sin(shot.roll / 2), c = Math.cos(shot.roll / 2);
+    q.set(q.x * c + q.y * s, q.y * c - q.x * s, q.z * c + q.w * s, q.w * c - q.z * s);
   }
 
   private apply(sample: ShowSample): void {

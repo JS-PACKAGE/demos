@@ -9,6 +9,15 @@ header { position: absolute; z-index: 2; top: 0; left: 24px; right: 24px; height
 .edition { color: #5c6572; margin-left: 18px; }
 .theater { position: absolute; inset: 0; overflow: hidden; background: #000; display: grid; place-items: center; }
 canvas { display: block; width: min(100vw, calc(100dvh * 16 / 9)); height: min(100dvh, calc(100vw * 9 / 16)); }
+/* Film layers share the canvas' 16:9 box (no transform: blend modes must see the canvas beneath). */
+.film-frame { position: absolute; inset: 0; margin: auto; width: min(100vw, calc(100dvh * 16 / 9)); height: min(100dvh, calc(100vw * 9 / 16)); overflow: hidden; pointer-events: none; }
+.film { position: absolute; pointer-events: none; }
+.film-tint { inset: 0; mix-blend-mode: soft-light; }
+.film-vignette { inset: 0; background: radial-gradient(ellipse 74% 80% at 50% 50%, transparent 50%, #000 120%); }
+.film-grain { inset: -6%; width: 112%; height: 112%; mix-blend-mode: overlay; }
+.film-bar { left: 0; right: 0; height: 5.56%; background: #000; }
+.film-bar-top { top: 0; }
+.film-bar-bottom { bottom: 0; }
 .frame-bottom { position: absolute; left: 30px; right: 30px; display: flex; justify-content: space-between; font-size: 11px; letter-spacing: .14em; pointer-events: none; text-shadow: 0 1px 8px #000; }
 .frame-bottom { bottom: 104px; color: #a9b8c9; }
 .intro { position: absolute; inset: 0; padding: 9% 7%; background: linear-gradient(90deg, #04070cda, #04070c44 60%, transparent); display: flex; flex-direction: column; justify-content: center; align-items: flex-start; }
