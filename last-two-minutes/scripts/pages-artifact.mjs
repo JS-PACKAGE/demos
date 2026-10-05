@@ -18,4 +18,6 @@ await mkdir(destination);
 await cp(dist, resolve(destination, 'last-two-minutes'), { recursive: true });
 await cp(resolve(root, 'CNAME'), resolve(destination, 'CNAME'));
 await cp(resolve(root, '.nojekyll'), resolve(destination, '.nojekyll'));
+for (const file of ['index.html', 'landing.css', 'favicon.ico'])
+  await cp(resolve(root, file), resolve(destination, file));
 console.log(`Pages artifact prepared: ${destination}`);

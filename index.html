@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="JS-PACKAGE 的瀏覽器互動實驗與即時 3D 演出。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#090d17">
+  <title>Demo 展間 · JS-PACKAGE</title>
+  <link rel="icon" href="./favicon.ico" sizes="32x32">
+  <link rel="stylesheet" href="./landing.css">
+</head>
+<body>
+  <header><a class="brand" href="./">JS-PACKAGE <span>/ DEMOS</span></a><span class="status">瀏覽器裡的實驗展間</span></header>
+  <main>
+    <section class="intro" aria-labelledby="title">
+      <p class="eyebrow">REAL-TIME · INTERACTIVE · WEB</p>
+      <h1 id="title">打開瀏覽器，<br>走進另一個世界。</h1>
+      <p class="lead">用程式建立的場景、故事與互動。選一個 demo，親自進場。</p>
+    </section>
+    <section aria-labelledby="demos-title">
+      <div class="section-heading"><h2 id="demos-title">探索 demo</h2><span>01 / 展出中</span></div>
+      <a class="demo" href="./last-two-minutes/" aria-labelledby="planet-title" aria-describedby="planet-description">
+        <div class="art" aria-hidden="true"><div class="orbit"></div><div class="planet"></div><span class="countdown">02:00</span><span class="art-label">THE LAST TWO MINUTES</span></div>
+        <div class="detail"><p class="eyebrow">即時 3D 演出 / XYZ.js</p><h3 id="planet-title">一顆星球最後的兩分鐘</h3><p id="planet-description">從寧靜的軌道到最後的崩解。一場 120 秒的太空演出，由瀏覽器即時繪製，不是預錄影片。</p><div class="meta"><span>120 秒</span><span>音訊體驗</span><span>建議桌面瀏覽</span></div><span class="enter">進入演出 <span aria-hidden="true">↗</span></span></div>
+      </a>
+      <p class="note">進場後按「開始演出」播放。建議使用支援 WebGPU 的桌面瀏覽器，並開啟聲音。</p>
+    </section>
+  </main>
+  <footer><span>JS-PACKAGE · 用程式探索可能</span><a href="https://github.com/JS-PACKAGE/demos">原始碼 ↗</a></footer>
+</body>
+</html>
