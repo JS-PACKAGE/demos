@@ -61,9 +61,9 @@ export const CONTRACT = {
       { t: 20, position: [0, 7, 34], target: [0, 0, 0], fov: 60 },
     ] },
     { start: 20, end: 50, subject: 'combat', frames: [
-      { t: 20, position: [4, 8, 35], target: [0, 0, 4], fov: 62 },
-      { t: 35, position: [-6, 8, 36], target: [0, 0, 4], fov: 60 },
-      { t: 50, position: [6, 9, 35], target: [0, 0, 4], fov: 60 },
+      { t: 20, position: [4, 13, 58], target: [0, 0, 4], fov: 55 },
+      { t: 35, position: [-5, 12, 55], target: [0, 0, 4], fov: 55 },
+      { t: 50, position: [6, 14, 58], target: [0, 0, 4], fov: 55 },
     ] },
     { start: 50, end: 70, subject: 'surface', frames: [
       { t: 50, position: [0, 10.2, 0.4], target: [0, 11.1, -14], fov: 65 },

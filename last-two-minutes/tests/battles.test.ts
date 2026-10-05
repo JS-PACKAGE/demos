@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { CONTRACT, EVENTS } from '../src/show/contract.ts';
 import { sampleShow } from '../src/show/director.ts';
 import { BATTLES, DEFENDER_BATTLE, FLEET_BATTLE, SKY_BATTLE, battleVisible } from '../src/show/battles.ts';
-import { COMBAT_SHIELD_CENTER, COMBAT_SHIELD_RADII, createCombatScript, sampleCombatPoint, sampleCombatShip, type CombatPoint } from '../src/show/combat.ts';
+import { COMBAT_SHIELD_CENTER, COMBAT_SHIELD_RADII, createCombatScript, sampleCombatPoint, sampleCombatProjectile, sampleCombatShip, type CombatPoint } from '../src/show/combat.ts';
 import { CUES } from '../src/audio/score.ts';
 
 const planetQuiet = CONTRACT.quietWindows.filter(window => window.end <= CONTRACT.scene.impactTime);
@@ -22,6 +22,41 @@ test('authored kills land on their director events, at the dying ship', () => {
   // The two defender kills are also the camera subjects.
   assert.deepEqual(sampleShow(77).camera.target, EVENTS.find(event => event.id === 'defender-one')!.position);
   assert.deepEqual(sampleShow(91).camera.target, EVENTS.find(event => event.id === 'defender-two')!.position);
+});
+
+test('the established fleet sustains independently sourced crossfire from both factions', () => {
+  const { script } = FLEET_BATTLE;
+  assert.equal(script.ships.length, 20);
+  for (const side of ['defender', 'attacker'] as const) assert.equal(script.ships.filter(ship => ship.side === side).length, 10);
+  for (let source = 0; source < script.ships.length; source++) {
+    for (let turret = 0; turret < 2; turret++) {
+      assert.ok(script.shots.some(shot => shot.source === source && shot.turret === turret), `crew ${source}/${turret} never fires`);
+    }
+  }
+  const projectile = { x: 0, y: 0, z: 0, visible: false };
+  // Sample the projectile consumer, not just launches: crossfire must remain
+  // visible between volleys throughout the established battle.
+  for (let time = 6; time <= 26; time += .5) {
+    const sources = new Set<number>(), factions = new Set<string>(), positions = new Set<string>();
+    let flying = 0;
+    for (const shot of script.shots) {
+      sampleCombatProjectile(shot, time, projectile);
+      if (!projectile.visible) continue;
+      flying++;
+      sources.add(shot.source);
+      factions.add(script.ships[shot.source]!.side);
+      positions.add(`${projectile.x.toFixed(3)},${projectile.y.toFixed(3)},${projectile.z.toFixed(3)}`);
+    }
+    assert.ok(flying >= 6, `crossfire thins to ${flying} trajectories at ${time}s`);
+    assert.ok(sources.size >= 4, `crossfire comes from only ${sources.size} ships at ${time}s`);
+    assert.equal(factions.size, 2, `only one faction is firing at ${time}s`);
+    assert.equal(positions.size, flying, `projectiles overlap at ${time}s`);
+  }
+  const fatal = script.shots.find(shot => shot.result === 'kill')!;
+  assert.equal(fatal.source, 1);
+  assert.equal(fatal.turret, 0);
+  assert.equal(fatal.target, 3);
+  assert.ok(Math.abs(FLEET_BATTLE.start + fatal.hitTime - 35) < 1e-9);
 });
 
 test('nothing fires, flies or lands while the director holds the planet shots quiet, or while dead', () => {
@@ -77,10 +112,10 @@ test('shield impacts sit on the shield bubble in front of the target hull and sh
 });
 
 test('crews are seeded: the same script replays exactly and a different seed differs', () => {
-  const again = createCombatScript({ seed: CONTRACT.seed, duration: 30, stopAfter: 29.2, bubble: true, reload: [1.2, 3.4], ships: FLEET_BATTLE.script.ships,
+  const again = createCombatScript({ seed: CONTRACT.seed, duration: 30, stopAfter: 29.2, bubble: true, maxFlight: 4, reload: [.35, .85], firstAim: [.05, 1.5], ships: FLEET_BATTLE.script.ships,
     fatal: [{ source: 1, turret: 0, target: 3, hitAt: 15 }], approach: FLEET_BATTLE.script.approach });
   assert.deepEqual(again.shots, FLEET_BATTLE.script.shots);
-  const other = createCombatScript({ seed: CONTRACT.seed + 1, duration: 30, stopAfter: 29.2, bubble: true, reload: [1.2, 3.4], ships: FLEET_BATTLE.script.ships,
+  const other = createCombatScript({ seed: CONTRACT.seed + 1, duration: 30, stopAfter: 29.2, bubble: true, maxFlight: 4, reload: [.35, .85], firstAim: [.05, 1.5], ships: FLEET_BATTLE.script.ships,
     fatal: [{ source: 1, turret: 0, target: 3, hitAt: 15 }] });
   assert.notDeepEqual(other.shots.map(shot => shot.fireTime), FLEET_BATTLE.script.shots.map(shot => shot.fireTime));
   assert.ok(other.kills.get(3) === 15 || Math.abs(other.kills.get(3)! - 15) < 1e-9, 'authored kill stays exact under any seed');

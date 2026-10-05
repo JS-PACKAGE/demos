@@ -38,22 +38,48 @@ function screeningFleet(seed: number, count: number, sky = false, defenders = fa
   }));
 }
 
+// Staggered depth rows keep the crossfire in front of the planet, with room
+// between hulls for each pair of independently tracking turrets.
+const FLEET_SHIPS: readonly CombatShip[] = Object.freeze([
+  ship('defender', .73, [-12, 0, 21], [-.12, 0, -.02]),
+  ship('defender', .48, [-10, .2, 13], [-.1, 0, .04]),
+  ship('attacker', .68, [12, .05, 20], [.12, 0, -.02], 22),
+  ship('attacker', .46, [10, .15, 13], [.1, 0, .04], 11),
+  ...([-1, 1] as const).flatMap(direction => {
+    const side = direction < 0 ? 'defender' : 'attacker';
+    return [
+      ship(side, .46, [direction * 18, -2, 16], [direction * .05, 0, .01]),
+      ship(side, .42, [direction * 10.5, 5, 18], [direction * .04, 0, -.01]),
+      ship(side, .52, [direction * 18, 2, 23], [direction * .04, 0, .01]),
+      ship(side, .44, [direction * 10.5, -2, 25], [direction * .05, 0, -.01]),
+      ship(side, .48, [direction * 18, 5, 28], [direction * .03, 0, .01]),
+      ship(side, .4, [direction * 10.5, 3, 29], [direction * .04, 0, -.01]),
+      ship(side, .5, [direction * 18, -1, 32], [direction * .03, 0, 0]),
+      ship(side, .43, [direction * 10.5, 5, 32], [direction * .04, 0, 0]),
+    ];
+  }),
+]);
+
+const FLEET_APPROACH: readonly Vec3[] = Object.freeze([
+  [-44, 2, -4], [-38, -1, 6], [44, 3, -6], [38, -2, 8],
+  ...FLEET_SHIPS.slice(4).map((definition, index): Vec3 => [
+    (definition.side === 'defender' ? -1 : 1) * (38 + index % 4 * 3),
+    index % 3 - 1,
+    index % 2 ? 6 : -4,
+  ]),
+]);
+
 /** 20-50 s: the fleets reach station, trade fire, and one escort dies at 35 s. */
 export const FLEET_BATTLE: Battle = {
   name: 'fleet', start: combatStart,
   visible: [[FLEET_ARRIVAL, surfaceStart], [countdownStart, CONTRACT.duration]],
   script: createCombatScript({
-    seed: CONTRACT.seed, duration: combatEnd - combatStart, stopAfter: 29.2, bubble: true,
-    reload: [1.2, 3.4],
+    seed: CONTRACT.seed, duration: combatEnd - combatStart, stopAfter: 29.2, bubble: true, maxFlight: 4,
+    reload: [.35, .85], firstAim: [.05, 1.5],
     escorts: screeningFleet(CONTRACT.seed+101,56),
-    ships: [
-      ship('defender', .73, [-12, 0, 21], [-.12, 0, -.02]),
-      ship('defender', .48, [-10, .2, 13], [-.1, 0, .04]),
-      ship('attacker', .68, [12, .05, 20], [.12, 0, -.02], 22),
-      ship('attacker', .46, [10, .15, 13], [.1, 0, .04], 11),
-    ],
+    ships: FLEET_SHIPS,
     fatal: [{ source: 1, turret: 0, target: 3, hitAt: 35 - combatStart }],
-    approach: { duration: combatStart - FLEET_ARRIVAL, offsets: [[-44, 2, -4], [-38, -1, 6], [44, 3, -6], [38, -2, 8]] },
+    approach: { duration: combatStart - FLEET_ARRIVAL, offsets: FLEET_APPROACH },
   }),
 };
 
