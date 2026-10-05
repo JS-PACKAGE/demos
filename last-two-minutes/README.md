@@ -68,11 +68,11 @@ GAME_BASE=/last-two-minutes/ pnpm preview
 
 展出目標：**https://demos.js-package.xyz/last-two-minutes**。本機預覽不是上線。不要把開發 `index.html` 原樣部署，也不要把網址改成 `/dist/`。
 
-倉庫提供手動 `.github/workflows/last-two-minutes-pages.yml`，沒有 push 自動發布：
+倉庫提供 `.github/workflows/last-two-minutes-pages.yml`，推送至 `main` 會自動建置並發布，也保留手動執行：
 
-1. 經小語批准後 commit/push 本次變更；本次實作不代做。
-2. 在 GitHub Settings → Pages 將來源由 branch 切成 **GitHub Actions**，自訂網域維持 `demos.js-package.xyz`；這是外部設定，需核准。
-3. 在 Actions 手動執行「展出一顆星球最後的兩分鐘」。工作流程複核雜湊、安裝鎖檔、測契約、以 `/last-two-minutes/` 建置，組成 `.pages/last-two-minutes/` artifact 後發布。
+1. 在 GitHub Settings → Pages 將來源設為 **GitHub Actions**，自訂網域維持 `demos.js-package.xyz`。
+2. 將變更推送至 `main`，即自動觸發發布。
+3. 也可在 Actions 手動執行「展出一顆星球最後的兩分鐘」。工作流程複核雜湊、安裝鎖檔、測契約、以 `/last-two-minutes/` 建置，組成 `.pages/last-two-minutes/` artifact 後發布。
 4. 依 `PLAN.md` Gate E 核對兩種尾斜線網址、`engine/src/index.js`、瀏覽器實際 CSP 與乾淨 clone 建置。根路徑應顯示 demo 導覽頁，卡片連至 `/last-two-minutes/`。
 
 本機可在正式建置後執行 `node scripts/pages-artifact.mjs` 預先組 artifact。輸出目錄 `.pages/` 必須不存在，以拒絕混入舊展出檔；它被 Git 忽略。artifact 包含 demo 建置產物、根目錄導覽頁 `index.html`／`landing.css`、32×32 星球圖示 `favicon.ico`、原樣 `CNAME` 與 `.nojekyll`，不覆蓋 `src/`，也不改倉庫根 `CNAME`／`LICENSE`。導覽頁不需 JavaScript，支援窄螢幕排版；已在 Edge 檢查桌面與 390px 寬頁面、無橫向溢出及卡片導向，圖示回應為 HTTP 200。

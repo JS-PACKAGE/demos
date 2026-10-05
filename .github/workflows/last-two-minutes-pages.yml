@@ -1,5 +1,7 @@
 name: 展出一顆星球最後的兩分鐘
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
