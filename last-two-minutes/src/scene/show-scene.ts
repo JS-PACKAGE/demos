@@ -19,6 +19,7 @@ const EYE_HEIGHT = .003;
 const normalize = (v: Vec3): Vec3 => { const n = Math.hypot(...v) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
 
 export class ShowScene extends Scene {
+  static readonly preparationSteps = BATTLES.length + 5;
   readonly clock = new ShowClock();
   private readonly lens = new PerspectiveCamera();
   private readonly aim = new Vector3();
@@ -49,7 +50,7 @@ export class ShowScene extends Scene {
   private prepared = false;
   hdr = false;
 
-  constructor(private readonly onFrame: (sample: ShowSample) => void) {
+  constructor(private readonly onFrame: (sample: ShowSample) => void, private readonly onPrepared: (label: string) => Promise<void>) {
     super();
     this.lens.near = CONTRACT.camera.near; this.lens.far = CONTRACT.camera.far;
     this.camera3D = this.lens;
@@ -110,6 +111,7 @@ export class ShowScene extends Scene {
     this.textures.push(...planet.textures, ...ship.textures);
     this.geometries.push(...planet.geometries, ...ship.geometries);
     for (const node of planet.root.children) if (node instanceof Mesh && node.material instanceof NativeMaterial3D) this.nativeMaterials.push(node.material);
+    await this.onPrepared('星球與主力艦已建立');
     for (const battle of BATTLES) {
       const model = await createCombatModel(ship, battle.script);
       this.add(model.root);
@@ -122,6 +124,7 @@ export class ShowScene extends Scene {
         if (node instanceof Mesh && node.castShadow) this.fleetShadowCasters.push(node);
         pending.push(...node.children);
       }
+      await this.onPrepared(`${battle.name === 'fleet' ? '艦隊會戰' : battle.name === 'sky' ? '天空交火' : '防守艦隊'}已建立`);
     }
     const weapon = await createWeaponModel(ship);
     this.weapon = weapon; this.add(weapon.root);
@@ -133,6 +136,7 @@ export class ShowScene extends Scene {
       const [dx, dy, dz] = this.weaponDirection;
       weapon.root.rotation.set(-dy, dx, 0, 1 + dz).normalize();
     }
+    await this.onPrepared('主武器已建立');
     const white = ship.textures[4]!;
     const sky = createSurfaceSky(white); this.sky = sky; this.add(sky.mesh);
     this.geometries.push(sky.geometry); this.nativeMaterials.push(sky.material);
@@ -146,14 +150,17 @@ export class ShowScene extends Scene {
       const y = random() * 2 - 1, angle = random() * Math.PI * 2, r = Math.sqrt(1 - y * y), size = .018 + random() * .025;
       stars.setMatrixAt(i, pose(Math.cos(angle) * r * 180, y * 180, Math.sin(angle) * r * 180, size, size, size));
     }
+    await this.onPrepared('天空與崩解特效已建立');
     if (signal.aborted || this.released) { this.releaseResources(); throw new DOMException('Aborted', 'AbortError'); }
     await Promise.all([game.graphics.prepareTextures(this.textures), ...this.geometries.map(geometry => game.graphics.prepareGeometry(geometry)),
       ...this.nativeMaterials.map(material => game.graphics.prepareMaterial(material))]);
+    await this.onPrepared('GPU 貼圖、幾何與材質已就緒');
     await this.buildStreams();
     if (signal.aborted || this.released) throw new DOMException('Aborted', 'AbortError');
     this.planet?.reset(); this.weapon?.reset();
     this.apply(sampleShow(0));
     this.prepared = true;
+    await this.onPrepared('引擎尾焰與場景已就緒');
   }
 
   /** Three exhaust plumes follow the hero hull in its own frame. */

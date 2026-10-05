@@ -16,10 +16,14 @@
       </header>
       <section class="theater" aria-label="120 秒即時 3D 演出">
         <canvas id="show" width="1280" height="720" aria-label="星球、艦隊與崩解的即時演出"></canvas>
-        <div id="intro" class="intro">
+        <div id="intro" class="intro" aria-busy="true">
           <p class="eyebrow">一場無法挽回的告別</p>
           <h1>一顆星球<br />最後的兩分鐘<span class="title-period">。</span></h1>
           <p class="description">先看見它的重量。<br />再看著一切，失去重力。</p>
+          <div class="loading">
+            <div class="loading-caption"><span id="loading-stage" role="status">初始化渲染引擎…</span><span id="loading-percent">0%</span></div>
+            <progress id="loading-progress" max="1" value="0" aria-label="初始化完成階段" aria-describedby="loading-stage"></progress>
+          </div>
           <div class="start-actions">
             <button id="start" class="primary" disabled>開始演出 <span aria-hidden="true">↗</span></button>
             <button id="silent" class="quiet-button" disabled>無聲播放</button>

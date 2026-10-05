@@ -11,6 +11,9 @@ const time = document.querySelector<HTMLElement>('#time')!;
 const beat = document.querySelector<HTMLElement>('#beat')!;
 const sound = document.querySelector<HTMLElement>('#sound')!;
 const progress = document.querySelector<HTMLProgressElement>('#progress')!;
+const loadingProgress = document.querySelector<HTMLProgressElement>('#loading-progress')!;
+const loadingStage = document.querySelector<HTMLElement>('#loading-stage')!;
+const loadingPercent = document.querySelector<HTMLElement>('#loading-percent')!;
 const end = document.querySelector<HTMLElement>('#end')!;
 const failure = document.querySelector<HTMLElement>('#failure')!;
 const unsupported = document.querySelector<HTMLElement>('#unsupported')!;
@@ -42,6 +45,7 @@ document.addEventListener('focusin', revealControls);
 
 function showFailure(message: string): void {
   intro.hidden = true;
+  intro.setAttribute('aria-busy', 'false');
   unsupported.hidden = false;
   failure.textContent = message;
   status.textContent = '演出未能開始';
@@ -54,6 +58,7 @@ function refreshControls(): void {
   resume.hidden = state !== 'paused';
   replay.hidden = !['playing', 'paused', 'ended'].includes(state);
   end.hidden = state !== 'ended';
+  if (state === 'loading') return;
   if (lastState !== state) {
     lastState = state;
     document.body.dataset.playing = String(state === 'playing');
@@ -113,11 +118,24 @@ async function boot(): Promise<void> {
   intro.hidden = false;
   unsupported.hidden = true;
   start.disabled = silent.disabled = true;
+  intro.setAttribute('aria-busy', 'true');
+  loadingProgress.value = 0;
+  loadingPercent.textContent = '0%';
+  loadingStage.textContent = '初始化渲染引擎…';
+  status.textContent = '正在初始化演出…';
   lastSecond = -1;
   lastState = '';
   try {
-    runtime = await createRuntime(canvas, frame, showFailure);
+    runtime = await createRuntime(canvas, frame, showFailure, (completed, total, label) => {
+      if (!unsupported.hidden) return;
+      loadingProgress.max = total;
+      loadingProgress.value = completed;
+      loadingPercent.textContent = `${Math.floor(completed / total * 100)}%`;
+      loadingStage.textContent = label;
+      status.textContent = label;
+    });
     backend.textContent = `${runtime.backend === 'webgpu' ? 'WebGPU' : 'WebGL2'} · 即時渲染`;
+    intro.setAttribute('aria-busy', 'false');
     start.disabled = silent.disabled = false;
     refreshControls();
   } catch (error) {
